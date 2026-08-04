@@ -15,7 +15,10 @@ services:
       retries: 20
 
   api:
-    build: .
+    # Published by .github/workflows/docker-publish.yml on every push to main.
+    # See README "Container image" for all tags and pull options.
+    image: ghcr.io/18345174/echoear_cloud:latest
+    pull_policy: always
     restart: unless-stopped
     depends_on:
       postgres:

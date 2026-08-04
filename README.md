@@ -11,17 +11,42 @@ tunnel. It has no runtime dependency on `mqtt_server`.
 - Idempotent SQL migrations in `migrations/`
 - Docker Compose deployment for API and PostgreSQL
 - End-to-end encrypted HAPI relay: the service only routes opaque frames
+- CI-published container image on GitHub Container Registry (GHCR)
 
 The clean schema intentionally excludes the retired ACP task/message history
 tables. HAPI remains the source of truth for tasks, messages, models, tools,
 permissions and session history.
+
+## Container image
+
+Every push to `main` builds and publishes an API image. Full reference guide:
+[docs/docker-image.md](docs/docker-image.md).
+
+| Item | Value |
+| --- | --- |
+| Image | `ghcr.io/18345174/echoear_cloud` |
+| Latest tag | `ghcr.io/18345174/echoear_cloud:latest` |
+| Packages | https://github.com/18345174/echoear_cloud/pkgs/container/echoear_cloud |
+| Workflow | [Publish Docker image](https://github.com/18345174/echoear_cloud/actions/workflows/docker-publish.yml) |
+
+```bash
+# Pull the latest published API image
+docker pull ghcr.io/18345174/echoear_cloud:latest
+```
+
+`docker-compose.yml` already points at that image (`pull_policy: always`), so a
+normal compose deploy downloads the cloud build instead of compiling locally.
+
+Other tags pushed on each build: short SHA, full SHA, and UTC timestamp
+(`YYYYMMDD-HHmmss`). Prefer a SHA tag when you need a pinned production deploy.
 
 ## Start
 
 ```bash
 cp .env.example .env
 # Set unique POSTGRES_PASSWORD and BOOTSTRAP_ADMIN_PASSWORD values in .env.
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 docker compose ps
 curl http://127.0.0.1:8080/healthz
 ```
@@ -78,6 +103,10 @@ device tokens are stored as SHA-256 hashes; passwords use bcrypt.
 ```bash
 # Logs
 docker compose logs -f api
+
+# Refresh API container to the newest GHCR image
+docker compose pull api
+docker compose up -d api
 
 # Database backup
 docker compose exec -T postgres pg_dump -U echoear echoear > echoear.sql
