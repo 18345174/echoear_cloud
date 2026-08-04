@@ -343,10 +343,10 @@ func validateEnvelope(value hapiEnvelope, agent *database.Agent, requestID strin
 	if len(value.EncryptedKey) < 32 || len(value.EncryptedKey) > 2048 {
 		return "hapi 连接信封密钥无效"
 	}
-	if decoded, err := base64.RawURLEncoding.DecodeString(value.Nonce); err != nil || len(decoded) != 12 {
+	if decoded, err := base64.StdEncoding.DecodeString(value.Nonce); err != nil || len(decoded) != 12 {
 		return "hapi 连接信封 nonce 无效"
 	}
-	if decoded, err := base64.RawURLEncoding.DecodeString(value.Ciphertext); err != nil || len(decoded) < 17 || len(decoded) > hapiCiphertextMax {
+	if decoded, err := base64.StdEncoding.DecodeString(value.Ciphertext); err != nil || len(decoded) < 17 || len(decoded) > hapiCiphertextMax {
 		return "hapi 连接信封 ciphertext 无效"
 	}
 	return ""
@@ -356,10 +356,10 @@ func validateEncryptedBlob(value encryptedBlob) string {
 	if value.Version != 1 || value.AAD == "" {
 		return "加密响应版本或 AAD 无效"
 	}
-	if decoded, err := base64.RawURLEncoding.DecodeString(value.Nonce); err != nil || len(decoded) != 12 {
+	if decoded, err := base64.StdEncoding.DecodeString(value.Nonce); err != nil || len(decoded) != 12 {
 		return "加密响应 nonce 无效"
 	}
-	if decoded, err := base64.RawURLEncoding.DecodeString(value.Ciphertext); err != nil || len(decoded) < 17 || len(decoded) > hapiCiphertextMax {
+	if decoded, err := base64.StdEncoding.DecodeString(value.Ciphertext); err != nil || len(decoded) < 17 || len(decoded) > hapiCiphertextMax {
 		return "加密响应 ciphertext 无效"
 	}
 	return ""

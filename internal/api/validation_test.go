@@ -1,8 +1,11 @@
 package api
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"testing"
+
+	"github.com/18345174/echoear_cloud/internal/database"
 )
 
 func TestValidIdentifier(t *testing.T) {
@@ -33,5 +36,44 @@ func TestSanitizeCapabilitiesDropsUntrustedFields(t *testing.T) {
 	}
 	if _, exists := value["workspace_path"]; exists {
 		t.Fatalf("private field leaked: %s", raw)
+	}
+}
+
+func TestValidateEnvelopeAcceptsStandardBase64(t *testing.T) {
+	requestID := "hapi-request-12345678"
+	keyID := "key-12345678"
+	agent := &database.Agent{
+		AgentID:      "default",
+		PublicKey:    "public-key",
+		KeyID:        keyID,
+		KeyAlgorithm: hapiAlgorithm,
+	}
+	value := hapiEnvelope{
+		Version:      2,
+		Operation:    "hapi_connection",
+		RequestID:    requestID,
+		Algorithm:    hapiAlgorithm,
+		KeyID:        keyID,
+		EncryptedKey: base64.StdEncoding.EncodeToString(make([]byte, 256)),
+		Nonce:        base64.StdEncoding.EncodeToString(make([]byte, 12)),
+		Ciphertext:   base64.StdEncoding.EncodeToString(make([]byte, 17)),
+		AAD:          "echoear-control-v2|default|hapi_connection||" + requestID + "|" + keyID,
+	}
+
+	if message := validateEnvelope(value, agent, requestID); message != "" {
+		t.Fatalf("standard Base64 envelope rejected: %s", message)
+	}
+}
+
+func TestValidateEncryptedBlobAcceptsStandardBase64(t *testing.T) {
+	value := encryptedBlob{
+		Version:    1,
+		Nonce:      base64.StdEncoding.EncodeToString(make([]byte, 12)),
+		Ciphertext: base64.StdEncoding.EncodeToString(make([]byte, 17)),
+		AAD:        "echoear-response-v1|default|hapi_connection|hapi-request-12345678",
+	}
+
+	if message := validateEncryptedBlob(value); message != "" {
+		t.Fatalf("standard Base64 response rejected: %s", message)
 	}
 }
