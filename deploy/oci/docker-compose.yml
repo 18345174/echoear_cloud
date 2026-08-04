@@ -1,5 +1,5 @@
-# OCI stack: /opt/stack/echoear_cloud
-# Image: multi-arch (linux/amd64 + linux/arm64) from GHCR
+# OCI stack template: /opt/stack/echoear_cloud
+# Public domain: xu-hapi.flyooo.uk (Traefik + Cloudflare)
 services:
   postgres:
     image: postgres:17-alpine
@@ -41,9 +41,10 @@ services:
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?set PUBLIC_BASE_URL in .env}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-*}
       GIN_MODE: ${GIN_MODE:-release}
-    # Debug-only local port; public access can be added later via Traefik labels.
     ports:
       - "127.0.0.1:18080:8080"
+    expose:
+      - "8080"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
       interval: 10s
@@ -51,11 +52,24 @@ services:
       retries: 10
     networks:
       - echoear
-      # Uncomment when domain + Traefik labels are ready:
-      # - proxy
+      - proxy
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=proxy
+      - traefik.http.routers.echoear.rule=Host(`xu-hapi.flyooo.uk`)
+      - traefik.http.routers.echoear.entrypoints=websecure
+      - traefik.http.routers.echoear.tls=true
+      - traefik.http.routers.echoear.tls.certresolver=letsencrypt
+      - traefik.http.routers.echoear.service=echoear
+      - traefik.http.routers.echoear-http.rule=Host(`xu-hapi.flyooo.uk`)
+      - traefik.http.routers.echoear-http.entrypoints=web
+      - traefik.http.routers.echoear-http.middlewares=redirect-to-https@file
+      - traefik.http.routers.echoear-http.service=echoear
+      - traefik.http.services.echoear.loadbalancer.server.port=8080
+      - traefik.http.services.echoear.loadbalancer.passHostHeader=true
 
 networks:
   echoear:
     driver: bridge
-  # proxy:
-  #   external: true
+  proxy:
+    external: true

@@ -75,26 +75,29 @@ ssh -i ~/.ssh/echoear_cloud_deploy_ed25519 \
   ubuntu@161.153.84.30
 ```
 
-健康检查（服务器本机）：
+健康检查：
 
 ```bash
+# 服务器本机
 curl -fsS http://127.0.0.1:18080/healthz
+
+# 公网（Traefik + Cloudflare）
+curl -fsS https://xu-hapi.flyooo.uk/healthz
 ```
 
-## 你需要改的配置
+## 域名与反代
 
-登录服务器编辑：
+| 项 | 值 |
+| --- | --- |
+| 公网域名 | `https://xu-hapi.flyooo.uk` |
+| 应用配置 | `.env` 里 `PUBLIC_BASE_URL=https://xu-hapi.flyooo.uk` |
+| Traefik Host 规则 | 与上面同一域名 |
+| Docker 网络 | `proxy`（与 OCI 上其他服务一致） |
+| 证书 | Traefik `letsencrypt` |
 
-```bash
-nano /opt/stack/echoear_cloud/.env
-```
+DNS 由 Cloudflare 指向本机源站（橙云即可，与 `imagegen` / `way` 同套路）。
 
-至少改掉：
+## 配置文件
 
-- `POSTGRES_PASSWORD`
-- `BOOTSTRAP_ADMIN_PASSWORD`
-- `PUBLIC_BASE_URL`（真实对外源站，例如 `https://echoear.your.domain`）
-
-改完后执行一次 `./deploy.sh` 或手动跑 **Deploy OCI** 工作流。
-
-域名 / Traefik 反代尚未默认打开；当前 api 仅绑定 `127.0.0.1:18080`。需要公网域名时，再在 compose 里加 Traefik labels 并接入 `proxy` 网络。
+真实密钥只写在服务器 `/opt/stack/echoear_cloud/.env`（权限 600），不要提交到 Git。  
+仓库里的 `deploy/oci/.env.example` 仅作模板。
