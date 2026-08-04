@@ -1,0 +1,61 @@
+# OCI stack: /opt/stack/echoear_cloud
+# Image: multi-arch (linux/amd64 + linux/arm64) from GHCR
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: echoear-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-echoear}
+      POSTGRES_USER: ${POSTGRES_USER:-echoear}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - ./postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-echoear} -d ${POSTGRES_DB:-echoear}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - echoear
+
+  api:
+    image: ${ECHOEAR_IMAGE:-ghcr.io/18345174/echoear_cloud:latest}
+    container_name: echoear-api
+    pull_policy: always
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB:-echoear}
+      POSTGRES_USER: ${POSTGRES_USER:-echoear}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_SSLMODE: disable
+      BOOTSTRAP_ADMIN_USERNAME: ${BOOTSTRAP_ADMIN_USERNAME:-admin}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:?set BOOTSTRAP_ADMIN_PASSWORD in .env}
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-}
+      HTTP_PORT: 8080
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?set PUBLIC_BASE_URL in .env}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-*}
+      GIN_MODE: ${GIN_MODE:-release}
+    # Debug-only local port; public access can be added later via Traefik labels.
+    ports:
+      - "127.0.0.1:18080:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    networks:
+      - echoear
+      # Uncomment when domain + Traefik labels are ready:
+      # - proxy
+
+networks:
+  echoear:
+    driver: bridge
+  # proxy:
+  #   external: true

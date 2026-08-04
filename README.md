@@ -11,7 +11,8 @@ tunnel. It has no runtime dependency on `mqtt_server`.
 - Idempotent SQL migrations in `migrations/`
 - Docker Compose deployment for API and PostgreSQL
 - End-to-end encrypted HAPI relay: the service only routes opaque frames
-- CI-published container image on GitHub Container Registry (GHCR)
+- CI-published multi-arch container image on GitHub Container Registry (GHCR)
+- Optional OCI auto-deploy after each successful image publish
 
 The clean schema intentionally excludes the retired ACP task/message history
 tables. HAPI remains the source of truth for tasks, messages, models, tools,
@@ -19,15 +20,18 @@ permissions and session history.
 
 ## Container image
 
-Every push to `main` builds and publishes an API image. Full reference guide:
+Every push to `main` builds and publishes a multi-arch API image
+(`linux/amd64` + `linux/arm64`). Full reference:
 [docs/docker-image.md](docs/docker-image.md).
 
 | Item | Value |
 | --- | --- |
 | Image | `ghcr.io/18345174/echoear_cloud` |
 | Latest tag | `ghcr.io/18345174/echoear_cloud:latest` |
+| Platforms | `linux/amd64`, `linux/arm64` |
 | Packages | https://github.com/18345174/echoear_cloud/pkgs/container/echoear_cloud |
-| Workflow | [Publish Docker image](https://github.com/18345174/echoear_cloud/actions/workflows/docker-publish.yml) |
+| Publish workflow | [Publish Docker image](https://github.com/18345174/echoear_cloud/actions/workflows/docker-publish.yml) |
+| Deploy workflow | [Deploy OCI](https://github.com/18345174/echoear_cloud/actions/workflows/deploy-oci.yml) |
 
 ```bash
 # Pull the latest published API image
@@ -39,6 +43,18 @@ normal compose deploy downloads the cloud build instead of compiling locally.
 
 Other tags pushed on each build: `sha-<short>`, `sha-<full>`, and UTC timestamp
 (`YYYYMMDD-HHmmss`). Prefer a SHA tag when you need a pinned production deploy.
+
+## OCI auto-deploy
+
+After the image is published, the publish workflow **actively dispatches** the
+independent **Deploy OCI** workflow (it does not use `workflow_run` watching).
+
+Server layout, dedicated SSH deploy key, and secrets:
+[deploy/oci/README.md](deploy/oci/README.md).
+
+Server path: `/opt/stack/echoear_cloud`  
+Remote command: `/opt/stack/echoear_cloud/deploy.sh`  
+Local health on server: `http://127.0.0.1:18080/healthz`
 
 ## Start
 

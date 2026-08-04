@@ -12,6 +12,8 @@
 | Packages 页面 | https://github.com/18345174/echoear_cloud/pkgs/container/echoear_cloud |
 | Actions 工作流 | `.github/workflows/docker-publish.yml` |
 | Actions 运行记录 | https://github.com/18345174/echoear_cloud/actions/workflows/docker-publish.yml |
+| 架构 | `linux/amd64` + `linux/arm64`（同一组标签的多架构 manifest） |
+| OCI 部署 | 镜像发布成功后主动触发 `deploy-oci.yml`（见 [deploy/oci/README.md](../deploy/oci/README.md)） |
 
 ## 何时构建
 
@@ -19,6 +21,8 @@
 
 1. 向 `main` 分支 push
 2. 在 GitHub Actions 页面手动运行 **Publish Docker image**（`workflow_dispatch`）
+
+构建成功后会 **主动 dispatch** 独立的 **Deploy OCI** 工作流（不是 `workflow_run` 监听）。
 
 每次成功构建至少会打这些标签：
 

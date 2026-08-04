@@ -1,0 +1,69 @@
+name: Deploy OCI
+
+# Independent deploy workflow.
+# - Manually: Actions → Deploy OCI → Run workflow
+# - Automatically: Publish Docker image dispatches this workflow after a successful push
+#   (active trigger; this workflow does NOT watch/monitor the publish workflow)
+
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: "Optional image ref override (empty = server .env / latest)"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: SSH deploy on OCI
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Validate deploy secrets
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in OCI_DEPLOY_HOST OCI_DEPLOY_USER OCI_DEPLOY_SSH_KEY; do
+            if [ -z "${!name:-}" ]; then
+              echo "Missing secret: $name"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "Configure repository secrets before deploying."
+            exit 1
+          fi
+          echo "Deploy target: ${OCI_DEPLOY_USER}@${OCI_DEPLOY_HOST}"
+        env:
+          OCI_DEPLOY_HOST: ${{ secrets.OCI_DEPLOY_HOST }}
+          OCI_DEPLOY_USER: ${{ secrets.OCI_DEPLOY_USER }}
+          OCI_DEPLOY_SSH_KEY: ${{ secrets.OCI_DEPLOY_SSH_KEY }}
+
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.2
+        with:
+          host: ${{ secrets.OCI_DEPLOY_HOST }}
+          username: ${{ secrets.OCI_DEPLOY_USER }}
+          key: ${{ secrets.OCI_DEPLOY_SSH_KEY }}
+          port: 22
+          # Dedicated key is force-command'd to /opt/stack/echoear_cloud/deploy.sh
+          # Any remote command still runs that script only.
+          script: /opt/stack/echoear_cloud/deploy.sh
+          command_timeout: 15m
+          timeout: 60s
+
+      - name: Summary
+        run: |
+          {
+            echo "## OCI deploy"
+            echo ""
+            echo "- Host: \`${{ secrets.OCI_DEPLOY_HOST }}\`"
+            echo "- User: \`${{ secrets.OCI_DEPLOY_USER }}\`"
+            echo "- Remote script: \`/opt/stack/echoear_cloud/deploy.sh\`"
+            echo "- Local health: \`http://127.0.0.1:18080/healthz\` on the server"
+          } >> "$GITHUB_STEP_SUMMARY"
