@@ -37,7 +37,7 @@ docker pull ghcr.io/18345174/echoear_cloud:latest
 `docker-compose.yml` already points at that image (`pull_policy: always`), so a
 normal compose deploy downloads the cloud build instead of compiling locally.
 
-Other tags pushed on each build: short SHA, full SHA, and UTC timestamp
+Other tags pushed on each build: `sha-<short>`, `sha-<full>`, and UTC timestamp
 (`YYYYMMDD-HHmmss`). Prefer a SHA tag when you need a pinned production deploy.
 
 ## Start

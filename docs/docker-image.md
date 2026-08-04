@@ -25,17 +25,17 @@
 | 标签 | 含义 |
 | --- | --- |
 | `latest` | 当前 `main` 最新成功构建（推荐日常使用） |
-| `<short-sha>` | 短 commit，例如 `a1b2c3d` |
-| `<full-sha>` | 完整 commit SHA，便于精确回滚 |
+| `sha-<short>` | 短 commit，例如 `sha-93750ce` |
+| `sha-<full>` | 完整 commit SHA，便于精确回滚 |
 | `YYYYMMDD-HHmmss` | 构建时间戳（UTC） |
 
-示例：
+示例（首次成功发布）：
 
 ```text
 ghcr.io/18345174/echoear_cloud:latest
-ghcr.io/18345174/echoear_cloud:a1b2c3d
-ghcr.io/18345174/echoear_cloud:606925cc0c3ff2640876692b0a15c0383ab53fa3
-ghcr.io/18345174/echoear_cloud:20260804-083012
+ghcr.io/18345174/echoear_cloud:sha-93750ce
+ghcr.io/18345174/echoear_cloud:sha-93750ce5ec312c3f511c51d5b737d8e59617c7d7
+ghcr.io/18345174/echoear_cloud:20260804-084141
 ```
 
 ## 拉取镜像
@@ -94,16 +94,8 @@ docker compose up -d
 
 ```yaml
 api:
-  image: ghcr.io/18345174/echoear_cloud:<short-sha>
+  image: ghcr.io/18345174/echoear_cloud:sha-93750ce
   # 不要写 pull_policy: always，避免被 latest 覆盖预期版本
-```
-
-环境变量覆盖镜像名（可选）：
-
-```bash
-export ECHOEAR_IMAGE=ghcr.io/18345174/echoear_cloud:a1b2c3d
-# 若 compose 里写成 image: ${ECHOEAR_IMAGE:-ghcr.io/18345174/echoear_cloud:latest}
-docker compose up -d
 ```
 
 当前仓库默认写死 `latest`，需要固定版本时直接改 `docker-compose.yml` 中的标签即可。
