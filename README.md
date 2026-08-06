@@ -69,9 +69,10 @@ curl http://127.0.0.1:8080/healthz
 
 `migrations/*.sql` run before every API start. They use idempotent DDL, so both
 a new PostgreSQL volume and an existing deployment receive all required tables
-and default rows. The bootstrap administrator is inserted only when that
-username does not already exist; restarting a container never resets its
-password.
+and default rows. When an existing deployment has users but no administrator,
+the earliest account is promoted to `admin`; otherwise a bootstrap administrator
+is inserted only when no administrator exists. Restarting a container never
+duplicates users or settings and never resets a password.
 
 The default API port is `8080`. Put a TLS reverse proxy in front of it for an
 Internet deployment and set `PUBLIC_BASE_URL` to the exact origin users enter
@@ -100,6 +101,7 @@ migrated by an explicit one-time data migration before clients are switched.
 - `POST /api/v1/auth/logout`
 - `GET /api/v1/auth/me`
 - `PUT /api/v1/auth/password`
+- `POST /api/v1/auth/register` (administrator only)
 - `/api/v1/echoear/devices/*`
 - `/api/v1/echoear/agents/*`
 - `/api/v1/echoear/settings`
@@ -109,6 +111,18 @@ Authentication retains the native-client header format:
 
 ```text
 Authorization: Session <session_id>
+```
+
+Accounts have either the `user` or `admin` role. Registration defaults to
+`user`; an administrator may explicitly create another administrator:
+
+```json
+{
+  "username": "new-user",
+  "password": "initial-password",
+  "email": "user@example.com",
+  "role": "user"
+}
 ```
 
 Device presence uses a separate short-lived bearer access token. Session and

@@ -13,6 +13,8 @@ import (
 	"net"
 	"strings"
 	"time"
+
+	"github.com/lib/pq"
 )
 
 const (
@@ -21,7 +23,11 @@ const (
 	ResponseTTL       = 5 * time.Minute
 	DeviceAccessTTL   = 5 * time.Hour
 	DeviceRefreshTTL  = 100 * 365 * 24 * time.Hour
+	RoleAdmin         = "admin"
+	RoleUser          = "user"
 )
+
+var ErrUsernameExists = errors.New("username already exists")
 
 type Session struct {
 	UserID     int64
@@ -30,6 +36,23 @@ type Session struct {
 	SessionID  string
 	LastSeenAt time.Time
 	ExpiresAt  time.Time
+}
+
+type User struct {
+	ID              int64     `json:"id"`
+	Username        string    `json:"username"`
+	Email           string    `json:"email"`
+	Role            string    `json:"role"`
+	PasswordChanged bool      `json:"password_changed"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+type CreateUserInput struct {
+	Username     string
+	PasswordHash string
+	Email        string
+	Role         string
 }
 
 type Device struct {
@@ -243,6 +266,41 @@ func (db *DB) RevokeSession(token string) error {
 		WHERE session_hash = $1 AND status = 'active'
 	`, HashSecret(token))
 	return err
+}
+
+func (db *DB) CreateUser(ctx context.Context, input CreateUserInput) (*User, error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	var user User
+	err = tx.QueryRowContext(ctx, `
+		INSERT INTO users(username, password_hash, email, role, password_changed)
+		VALUES ($1, $2, $3, $4, FALSE)
+		RETURNING id, username, email, role, password_changed, created_at, updated_at
+	`, strings.TrimSpace(input.Username), input.PasswordHash, strings.TrimSpace(input.Email), input.Role).Scan(
+		&user.ID, &user.Username, &user.Email, &user.Role, &user.PasswordChanged, &user.CreatedAt, &user.UpdatedAt,
+	)
+	if err != nil {
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) && pqErr.Code == "23505" {
+			return nil, ErrUsernameExists
+		}
+		return nil, err
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO user_settings(user_id) VALUES ($1)
+		ON CONFLICT (user_id) DO NOTHING
+	`, user.ID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return &user, nil
 }
 
 func (db *DB) BindDevice(ctx context.Context, userID int64, input DeviceInput) (*Device, bool, error) {

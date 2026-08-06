@@ -17,9 +17,10 @@ import (
 )
 
 const (
-	hapiAlgorithm     = "RSA-OAEP-256+A256GCM"
-	hapiBodyMax       = 32 * 1024
-	hapiCiphertextMax = 16 * 1024
+	hapiAlgorithm      = "RSA-OAEP-256+A256GCM"
+	hapiBodyMax        = 32 * 1024
+	hapiCiphertextMax  = 16 * 1024
+	apiContractVersion = 12
 )
 
 type Server struct {
@@ -53,6 +54,7 @@ func NewServer(db *database.DB, cfg config.Config) *Server {
 	auth.POST("/logout", s.logout)
 	auth.GET("/me", s.me)
 	auth.PUT("/password", s.changePassword)
+	auth.POST("/register", s.requireAdmin(), s.register)
 
 	echoear := api.Group("/echoear")
 	echoear.POST("/devices/token", s.deviceToken)
@@ -92,7 +94,7 @@ func (s *Server) health(c *gin.Context) {
 		fail(c, http.StatusServiceUnavailable, "database unavailable")
 		return
 	}
-	ok(c, "ok", gin.H{"service": "echoear_cloud", "contract_version": 11})
+	ok(c, "ok", gin.H{"service": "echoear_cloud", "contract_version": apiContractVersion})
 }
 
 func (s *Server) requireSession() gin.HandlerFunc {
@@ -121,6 +123,23 @@ func (s *Server) requireSession() gin.HandlerFunc {
 		c.Set("session", session)
 		c.Set("session_id", token)
 		c.Set("user_id", session.UserID)
+		c.Next()
+	}
+}
+
+func (s *Server) requireAdmin() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		session := currentSession(c)
+		if session == nil {
+			fail(c, http.StatusUnauthorized, "未提供有效会话")
+			c.Abort()
+			return
+		}
+		if session.Role != database.RoleAdmin {
+			fail(c, http.StatusForbidden, "仅管理员可以注册账号")
+			c.Abort()
+			return
+		}
 		c.Next()
 	}
 }
@@ -158,7 +177,7 @@ func (s *Server) login(c *gin.Context) {
 	ok(c, "登录成功", gin.H{
 		"user_id": user.ID, "session_id": token, "session_expires_at": expiresAt,
 		"username": user.Username, "role": user.Role,
-		"password_changed": boolInt(user.PasswordChanged), "feature_codes": []string{"echoear.use"},
+		"password_changed": boolInt(user.PasswordChanged), "feature_codes": featureCodes(user.Role),
 	})
 }
 
@@ -182,7 +201,7 @@ func (s *Server) me(c *gin.Context) {
 		"user_id": session.UserID, "username": session.Username, "role": session.Role,
 		"email": email, "password_changed": boolInt(passwordChanged), "created_at": createdAt,
 		"updated_at": updatedAt, "session_expires_at": session.ExpiresAt,
-		"feature_codes": []string{"echoear.use"},
+		"feature_codes": featureCodes(session.Role),
 	}
 	if lastLoginAt.Valid {
 		data["last_login_at"] = lastLoginAt.Time
@@ -221,6 +240,84 @@ func (s *Server) changePassword(c *gin.Context) {
 		return
 	}
 	ok(c, "success", nil)
+}
+
+type registerRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+	Email    string `json:"email"`
+	Role     string `json:"role"`
+}
+
+type registerInput struct {
+	Username string
+	Password string
+	Email    string
+	Role     string
+}
+
+func normalizeRegistration(request registerRequest) (registerInput, string) {
+	username := strings.TrimSpace(request.Username)
+	usernameLength := len([]rune(username))
+	if usernameLength < 3 || usernameLength > 64 {
+		return registerInput{}, "用户名长度须为3到64个字符"
+	}
+	if len(request.Password) < 6 || len(request.Password) > 72 || strings.TrimSpace(request.Password) == "" {
+		return registerInput{}, "密码长度须为6到72个字节"
+	}
+	email := strings.TrimSpace(request.Email)
+	if len([]rune(email)) > 254 {
+		return registerInput{}, "邮箱长度不能超过254个字符"
+	}
+	role := strings.ToLower(strings.TrimSpace(request.Role))
+	if role == "" {
+		role = database.RoleUser
+	}
+	if role != database.RoleUser && role != database.RoleAdmin {
+		return registerInput{}, "角色须为user或admin"
+	}
+	return registerInput{Username: username, Password: request.Password, Email: email, Role: role}, ""
+}
+
+func (s *Server) register(c *gin.Context) {
+	var request registerRequest
+	if c.ShouldBindJSON(&request) != nil {
+		fail(c, http.StatusBadRequest, "请求参数错误")
+		return
+	}
+	input, validationMessage := normalizeRegistration(request)
+	if validationMessage != "" {
+		fail(c, http.StatusBadRequest, validationMessage)
+		return
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
+	if err != nil {
+		fail(c, http.StatusInternalServerError, "密码加密失败")
+		return
+	}
+	user, err := s.db.CreateUser(c.Request.Context(), database.CreateUserInput{
+		Username: input.Username, PasswordHash: string(hash), Email: input.Email, Role: input.Role,
+	})
+	if errors.Is(err, database.ErrUsernameExists) {
+		fail(c, http.StatusConflict, "用户名已存在")
+		return
+	}
+	if err != nil {
+		fail(c, http.StatusInternalServerError, "注册账号失败")
+		return
+	}
+	ok(c, "注册成功", gin.H{
+		"user_id": user.ID, "username": user.Username, "email": user.Email, "role": user.Role,
+		"password_changed": boolInt(user.PasswordChanged), "created_at": user.CreatedAt, "updated_at": user.UpdatedAt,
+	})
+}
+
+func featureCodes(role string) []string {
+	codes := []string{"echoear.use"}
+	if role == database.RoleAdmin {
+		codes = append(codes, "echoear.account.register")
+	}
+	return codes
 }
 
 type bindRequest struct {

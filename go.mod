@@ -3,6 +3,7 @@ module github.com/18345174/echoear_cloud
 go 1.24
 
 require (
+	github.com/DATA-DOG/go-sqlmock v1.5.2
 	github.com/gin-contrib/cors v1.7.6
 	github.com/gin-gonic/gin v1.10.1
 	github.com/gorilla/websocket v1.5.3
