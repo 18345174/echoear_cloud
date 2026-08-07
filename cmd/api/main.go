@@ -24,6 +24,10 @@ func main() {
 		log.Fatalf("database: %v", err)
 	}
 	defer db.Close()
+	cfg.AccessTicketSigningKey, err = db.EnsureAccessTicketSigningKey(cfg.AccessTicketSigningKey)
+	if err != nil {
+		log.Fatalf("access ticket signing key: %v", err)
+	}
 
 	httpServer := &http.Server{
 		Addr: fmt.Sprintf(":%d", cfg.HTTPPort), Handler: api.NewServer(db, cfg).Handler(),

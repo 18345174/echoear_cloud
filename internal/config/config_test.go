@@ -42,11 +42,11 @@ func TestNormalizePublicBaseURL(t *testing.T) {
 	}
 }
 
-func TestLoadRequiresPersistentAccessTicketKey(t *testing.T) {
+func TestLoadAllowsDatabaseManagedAccessTicketKeyAndRejectsInvalidValue(t *testing.T) {
 	t.Setenv("PUBLIC_BASE_URL", "https://echoear.example.com")
 	t.Setenv("ACCESS_TICKET_SIGNING_KEY", "")
-	if _, err := Load(); err == nil {
-		t.Fatal("missing access ticket key was accepted")
+	if cfg, err := Load(); err != nil || cfg.AccessTicketSigningKey != "" {
+		t.Fatalf("missing access ticket key did not select database management: cfg=%#v err=%v", cfg, err)
 	}
 	t.Setenv("ACCESS_TICKET_SIGNING_KEY", "not-a-seed")
 	if _, err := Load(); err == nil {

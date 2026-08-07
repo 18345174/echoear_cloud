@@ -99,5 +99,5 @@ DNS 由 Cloudflare 指向本机源站（橙云即可，与 `imagegen` / `way` �
 
 ## 配置文件
 
-真实密钥只写在服务器 `/opt/stack/echoear_cloud/.env`（权限 600），不要提交到 Git。首次部署时用 `openssl rand -base64 32` 生成一次 `ACCESS_TICKET_SIGNING_KEY`，后续重启和升级必须保持不变。
+真实密钥不要提交到 Git。`ACCESS_TICKET_SIGNING_KEY` 留空时，服务会在 `app_settings` 中原子生成并持久化一次；也可以在服务器 `/opt/stack/echoear_cloud/.env`（权限 600）中用 `openssl rand -base64 32` 的结果显式覆盖，后续必须保持不变。
 仓库里的 `deploy/oci/.env.example` 仅作模板。

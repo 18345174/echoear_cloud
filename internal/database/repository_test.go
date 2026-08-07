@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -46,6 +47,40 @@ func TestRandomTokenAndHash(t *testing.T) {
 	}
 	if HashSecret(first) == first || HashSecret(first) != HashSecret(first) {
 		t.Fatal("hash behavior is invalid")
+	}
+}
+
+func TestEnsureAccessTicketSigningKeyUsesConfiguredValue(t *testing.T) {
+	db := &DB{}
+	configured := base64.StdEncoding.EncodeToString(make([]byte, 32))
+	got, err := db.EnsureAccessTicketSigningKey(configured)
+	if err != nil || got != configured {
+		t.Fatalf("configured key was not preserved: got=%q err=%v", got, err)
+	}
+}
+
+func TestEnsureAccessTicketSigningKeyPersistsOneDatabaseValue(t *testing.T) {
+	raw, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	db := &DB{DB: raw}
+	stored := base64.StdEncoding.EncodeToString(make([]byte, 32))
+
+	mock.ExpectExec("INSERT INTO app_settings").
+		WithArgs(accessTicketKeySetting, sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("SELECT value").
+		WithArgs(accessTicketKeySetting).
+		WillReturnRows(sqlmock.NewRows([]string{"value"}).AddRow(stored))
+
+	got, err := db.EnsureAccessTicketSigningKey("")
+	if err != nil || got != stored {
+		t.Fatalf("database-managed key was not loaded: got=%q err=%v", got, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
 	}
 }
 

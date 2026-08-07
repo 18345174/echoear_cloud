@@ -35,11 +35,7 @@ func Load() (Config, error) {
 	}
 	origins := splitCSV(env("CORS_ALLOWED_ORIGINS", "*"))
 	accessTicketSigningKey := strings.TrimSpace(os.Getenv("ACCESS_TICKET_SIGNING_KEY"))
-	seed, seedErr := base64.RawURLEncoding.DecodeString(accessTicketSigningKey)
-	if seedErr != nil || len(seed) != 32 {
-		seed, seedErr = base64.StdEncoding.DecodeString(accessTicketSigningKey)
-	}
-	if seedErr != nil || len(seed) != 32 {
+	if accessTicketSigningKey != "" && !validAccessTicketSeed(accessTicketSigningKey) {
 		return Config{}, fmt.Errorf("ACCESS_TICKET_SIGNING_KEY must be a base64-encoded 32-byte Ed25519 seed")
 	}
 	return Config{
@@ -50,6 +46,15 @@ func Load() (Config, error) {
 		SessionTTL:             30 * 24 * time.Hour,
 		AccessTicketSigningKey: accessTicketSigningKey,
 	}, nil
+}
+
+func validAccessTicketSeed(value string) bool {
+	seed, err := base64.RawURLEncoding.DecodeString(value)
+	if err == nil && len(seed) == 32 {
+		return true
+	}
+	seed, err = base64.StdEncoding.DecodeString(value)
+	return err == nil && len(seed) == 32
 }
 
 func buildPostgresURL() string {

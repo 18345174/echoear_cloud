@@ -18,16 +18,17 @@ import (
 )
 
 const (
-	AgentOnlineWindow  = 2 * time.Minute
-	CommandTTL         = 2 * time.Minute
-	ResponseTTL        = 5 * time.Minute
-	DeviceAccessTTL    = 5 * time.Hour
-	DeviceRefreshTTL   = 100 * 365 * 24 * time.Hour
-	RoleAdmin          = "admin"
-	RoleUser           = "user"
-	UserStatusActive   = "active"
-	UserStatusDisabled = "disabled"
-	UserStatusDeleted  = "deleted"
+	AgentOnlineWindow      = 2 * time.Minute
+	CommandTTL             = 2 * time.Minute
+	ResponseTTL            = 5 * time.Minute
+	DeviceAccessTTL        = 5 * time.Hour
+	DeviceRefreshTTL       = 100 * 365 * 24 * time.Hour
+	accessTicketKeySetting = "access_ticket_signing_key"
+	RoleAdmin              = "admin"
+	RoleUser               = "user"
+	UserStatusActive       = "active"
+	UserStatusDisabled     = "disabled"
+	UserStatusDeleted      = "deleted"
 )
 
 var ErrUsernameExists = errors.New("username already exists")
@@ -212,6 +213,38 @@ func RandomToken(bytes int) (string, error) {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
+func (db *DB) EnsureAccessTicketSigningKey(configured string) (string, error) {
+	configured = strings.TrimSpace(configured)
+	if configured != "" {
+		return configured, nil
+	}
+	seed := make([]byte, 32)
+	if _, err := rand.Read(seed); err != nil {
+		return "", fmt.Errorf("generate access ticket signing key: %w", err)
+	}
+	generated := base64.StdEncoding.EncodeToString(seed)
+	if _, err := db.Exec(`
+		INSERT INTO app_settings(key, value)
+		VALUES ($1, to_jsonb($2::text))
+		ON CONFLICT (key) DO NOTHING
+	`, accessTicketKeySetting, generated); err != nil {
+		return "", fmt.Errorf("persist access ticket signing key: %w", err)
+	}
+	var stored string
+	if err := db.QueryRow(`
+		SELECT value #>> '{}'
+		FROM app_settings
+		WHERE key = $1
+	`, accessTicketKeySetting).Scan(&stored); err != nil {
+		return "", fmt.Errorf("load access ticket signing key: %w", err)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(stored))
+	if err != nil || len(decoded) != 32 {
+		return "", errors.New("stored access ticket signing key is invalid")
+	}
+	return strings.TrimSpace(stored), nil
 }
 
 func NormalizeDeviceUID(value string) string {
