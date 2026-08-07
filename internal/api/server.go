@@ -20,18 +20,19 @@ const (
 	hapiAlgorithm      = "RSA-OAEP-256+A256GCM"
 	hapiBodyMax        = 32 * 1024
 	hapiCiphertextMax  = 16 * 1024
-	apiContractVersion = 12
+	apiContractVersion = 13
 )
 
 type Server struct {
-	db     *database.DB
-	config config.Config
-	router *gin.Engine
-	tunnel *hapiTunnel
+	db      *database.DB
+	config  config.Config
+	router  *gin.Engine
+	tunnel  *hapiTunnel
+	tickets *accessTicketSigner
 }
 
 func NewServer(db *database.DB, cfg config.Config) *Server {
-	s := &Server{db: db, config: cfg, tunnel: newHapiTunnel(db)}
+	s := &Server{db: db, config: cfg, tunnel: newHapiTunnel(db), tickets: newAccessTicketSigner(cfg.AccessTicketSigningKey)}
 	router := gin.New()
 	router.Use(gin.Recovery())
 	router.Use(gin.Logger())
@@ -56,6 +57,13 @@ func NewServer(db *database.DB, cfg config.Config) *Server {
 	auth.PUT("/password", s.changePassword)
 	auth.POST("/register", s.requireAdmin(), s.register)
 
+	admin := api.Group("/admin")
+	admin.Use(s.requireSession(), s.requireAdmin())
+	admin.GET("/users", s.adminListUsers)
+	admin.PATCH("/users/:user_id", s.adminUpdateUser)
+	admin.DELETE("/users/:user_id", s.adminDeleteUser)
+	admin.GET("/audit", s.adminListAudit)
+
 	echoear := api.Group("/echoear")
 	echoear.POST("/devices/token", s.deviceToken)
 	echoear.POST("/devices/presence", s.devicePresence)
@@ -72,6 +80,15 @@ func NewServer(db *database.DB, cfg config.Config) *Server {
 	echoear.POST("/devices/:device_uid/rotate-pair", s.rotatePair)
 	echoear.POST("/agents/register", s.registerAgent)
 	echoear.GET("/agents", s.listAgents)
+	echoear.GET("/access-ticket-key", s.accessTicketKey)
+	echoear.POST("/agents/:agent_id/access-ticket", s.createAccessTicket)
+	echoear.POST("/agents/:agent_id/access-usage", s.recordAgentAccessUsage)
+	echoear.POST("/agents/:agent_id/shares", s.createAgentShare)
+	echoear.GET("/shares", s.listAgentShares)
+	echoear.PATCH("/shares/:share_id", s.updateAgentShare)
+	echoear.POST("/shares/:share_id/accept", s.acceptAgentShare)
+	echoear.POST("/shares/:share_id/decline", s.declineAgentShare)
+	echoear.POST("/shares/:share_id/revoke", s.revokeAgentShare)
 	echoear.POST("/agents/:agent_id/hapi/connection", s.requestHapiConnection)
 	echoear.GET("/agents/me/hapi/commands", s.claimHapiCommands)
 	echoear.POST("/agents/me/hapi/commands/:command_id/ack", s.ackHapiCommand)
@@ -154,18 +171,22 @@ func (s *Server) login(c *gin.Context) {
 		return
 	}
 	var user struct {
-		ID                           int64
-		Username, PasswordHash, Role string
-		PasswordChanged              bool
+		ID                                   int64
+		Username, PasswordHash, Role, Status string
+		PasswordChanged                      bool
 	}
-	err := s.db.QueryRow(`SELECT id,username,password_hash,role,password_changed FROM users WHERE LOWER(username)=LOWER($1)`, strings.TrimSpace(request.Username)).
-		Scan(&user.ID, &user.Username, &user.PasswordHash, &user.Role, &user.PasswordChanged)
+	err := s.db.QueryRow(`SELECT id,username,password_hash,role,status,password_changed FROM users WHERE LOWER(username)=LOWER($1)`, strings.TrimSpace(request.Username)).
+		Scan(&user.ID, &user.Username, &user.PasswordHash, &user.Role, &user.Status, &user.PasswordChanged)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(request.Password)) != nil) {
 		fail(c, http.StatusUnauthorized, "用户名或密码错误")
 		return
 	}
 	if err != nil {
 		fail(c, http.StatusInternalServerError, "服务器错误")
+		return
+	}
+	if user.Status != database.UserStatusActive {
+		fail(c, http.StatusForbidden, "账号已被禁用或删除")
 		return
 	}
 	token, expiresAt, err := s.db.CreateSession(user.ID, c.ClientIP(), c.Request.UserAgent(), s.config.SessionTTL)
@@ -176,7 +197,7 @@ func (s *Server) login(c *gin.Context) {
 	_, _ = s.db.Exec(`UPDATE users SET last_login_at=NOW(),updated_at=NOW() WHERE id=$1`, user.ID)
 	ok(c, "登录成功", gin.H{
 		"user_id": user.ID, "session_id": token, "session_expires_at": expiresAt,
-		"username": user.Username, "role": user.Role,
+		"username": user.Username, "role": user.Role, "status": user.Status,
 		"password_changed": boolInt(user.PasswordChanged), "feature_codes": featureCodes(user.Role),
 	})
 }
@@ -198,7 +219,7 @@ func (s *Server) me(c *gin.Context) {
 		return
 	}
 	data := gin.H{
-		"user_id": session.UserID, "username": session.Username, "role": session.Role,
+		"user_id": session.UserID, "username": session.Username, "role": session.Role, "status": session.Status,
 		"email": email, "password_changed": boolInt(passwordChanged), "created_at": createdAt,
 		"updated_at": updatedAt, "session_expires_at": session.ExpiresAt,
 		"feature_codes": featureCodes(session.Role),
@@ -313,9 +334,9 @@ func (s *Server) register(c *gin.Context) {
 }
 
 func featureCodes(role string) []string {
-	codes := []string{"echoear.use"}
+	codes := []string{"echoear.use", "echoear.agent.share"}
 	if role == database.RoleAdmin {
-		codes = append(codes, "echoear.account.register")
+		codes = append(codes, "echoear.account.register", "echoear.account.manage", "echoear.agent.share.audit")
 	}
 	return codes
 }

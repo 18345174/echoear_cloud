@@ -62,8 +62,8 @@ func TestCreateUserCreatesDefaultSettingsAtomically(t *testing.T) {
 	mock.ExpectQuery("INSERT INTO users").
 		WithArgs("alice", "bcrypt-hash", "alice@example.com", RoleUser).
 		WillReturnRows(sqlmock.NewRows([]string{
-			"id", "username", "email", "role", "password_changed", "created_at", "updated_at",
-		}).AddRow(7, "alice", "alice@example.com", RoleUser, false, now, now))
+			"id", "username", "email", "role", "status", "password_changed", "created_at", "updated_at",
+		}).AddRow(7, "alice", "alice@example.com", RoleUser, UserStatusActive, false, now, now))
 	mock.ExpectExec("INSERT INTO user_settings").
 		WithArgs(int64(7)).
 		WillReturnResult(sqlmock.NewResult(0, 1))

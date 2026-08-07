@@ -60,7 +60,8 @@ Local health on server: `http://127.0.0.1:18080/healthz`
 
 ```bash
 cp .env.example .env
-# Set unique POSTGRES_PASSWORD and BOOTSTRAP_ADMIN_PASSWORD values in .env.
+# Set unique passwords and a persistent ACCESS_TICKET_SIGNING_KEY in .env.
+# Generate the latter once with: openssl rand -base64 32
 docker compose pull
 docker compose up -d
 docker compose ps
@@ -87,6 +88,7 @@ cloud addresses from being provisioned into devices.
 | `POSTGRES_PASSWORD` | PostgreSQL password; required |
 | `BOOTSTRAP_ADMIN_PASSWORD` | Initial standalone admin password; required |
 | `BOOTSTRAP_ADMIN_USERNAME` | Initial username, default `admin` |
+| `ACCESS_TICKET_SIGNING_KEY` | Persistent base64-encoded 32-byte Ed25519 seed; required |
 | `PUBLIC_BASE_URL` | Public origin returned during device binding; required |
 | `CORS_ALLOWED_ORIGINS` | Comma-separated origins; native-only deployments may use `*` |
 | `HTTP_PORT` | Host port published by Compose, default `8080` |

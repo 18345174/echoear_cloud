@@ -70,10 +70,12 @@ func TestRequireAdmin(t *testing.T) {
 }
 
 func TestFeatureCodes(t *testing.T) {
-	if got := featureCodes(database.RoleUser); !reflect.DeepEqual(got, []string{"echoear.use"}) {
+	if got := featureCodes(database.RoleUser); !reflect.DeepEqual(got, []string{"echoear.use", "echoear.agent.share"}) {
 		t.Fatalf("unexpected user features: %#v", got)
 	}
-	if got := featureCodes(database.RoleAdmin); !reflect.DeepEqual(got, []string{"echoear.use", "echoear.account.register"}) {
+	if got := featureCodes(database.RoleAdmin); !reflect.DeepEqual(got, []string{
+		"echoear.use", "echoear.agent.share", "echoear.account.register", "echoear.account.manage", "echoear.agent.share.audit",
+	}) {
 		t.Fatalf("unexpected admin features: %#v", got)
 	}
 }
@@ -99,15 +101,15 @@ func TestRegisterRouteRequiresAdministrator(t *testing.T) {
 
 			mock.ExpectQuery("SELECT s.user_id, u.username, u.role").
 				WithArgs(database.HashSecret("test-session")).
-				WillReturnRows(sqlmock.NewRows([]string{"user_id", "username", "role", "last_seen_at", "expires_at"}).
-					AddRow(1, "operator", test.sessionRole, now, now.Add(time.Hour)))
+				WillReturnRows(sqlmock.NewRows([]string{"user_id", "username", "role", "status", "last_seen_at", "expires_at"}).
+					AddRow(1, "operator", test.sessionRole, database.UserStatusActive, now, now.Add(time.Hour)))
 			if test.sessionRole == database.RoleAdmin {
 				mock.ExpectBegin()
 				mock.ExpectQuery("INSERT INTO users").
 					WithArgs("new-user", sqlmock.AnyArg(), "new@example.com", database.RoleUser).
 					WillReturnRows(sqlmock.NewRows([]string{
-						"id", "username", "email", "role", "password_changed", "created_at", "updated_at",
-					}).AddRow(2, "new-user", "new@example.com", database.RoleUser, false, now, now))
+						"id", "username", "email", "role", "status", "password_changed", "created_at", "updated_at",
+					}).AddRow(2, "new-user", "new@example.com", database.RoleUser, database.UserStatusActive, false, now, now))
 				mock.ExpectExec("INSERT INTO user_settings").
 					WithArgs(int64(2)).
 					WillReturnResult(sqlmock.NewResult(0, 1))

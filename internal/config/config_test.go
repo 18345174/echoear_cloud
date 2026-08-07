@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"net/url"
 	"testing"
 )
@@ -38,5 +39,21 @@ func TestNormalizePublicBaseURL(t *testing.T) {
 		if _, err := normalizePublicBaseURL(value); err == nil {
 			t.Fatalf("invalid public base URL accepted: %q", value)
 		}
+	}
+}
+
+func TestLoadRequiresPersistentAccessTicketKey(t *testing.T) {
+	t.Setenv("PUBLIC_BASE_URL", "https://echoear.example.com")
+	t.Setenv("ACCESS_TICKET_SIGNING_KEY", "")
+	if _, err := Load(); err == nil {
+		t.Fatal("missing access ticket key was accepted")
+	}
+	t.Setenv("ACCESS_TICKET_SIGNING_KEY", "not-a-seed")
+	if _, err := Load(); err == nil {
+		t.Fatal("invalid access ticket key was accepted")
+	}
+	t.Setenv("ACCESS_TICKET_SIGNING_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	if _, err := Load(); err != nil {
+		t.Fatalf("valid access ticket key was rejected: %v", err)
 	}
 }

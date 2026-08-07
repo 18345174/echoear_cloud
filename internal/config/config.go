@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"fmt"
 	"net"
 	"net/url"
@@ -11,11 +12,12 @@ import (
 )
 
 type Config struct {
-	HTTPPort       int
-	DatabaseURL    string
-	PublicBaseURL  string
-	AllowedOrigins []string
-	SessionTTL     time.Duration
+	HTTPPort               int
+	DatabaseURL            string
+	PublicBaseURL          string
+	AllowedOrigins         []string
+	SessionTTL             time.Duration
+	AccessTicketSigningKey string
 }
 
 func Load() (Config, error) {
@@ -32,12 +34,21 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	origins := splitCSV(env("CORS_ALLOWED_ORIGINS", "*"))
+	accessTicketSigningKey := strings.TrimSpace(os.Getenv("ACCESS_TICKET_SIGNING_KEY"))
+	seed, seedErr := base64.RawURLEncoding.DecodeString(accessTicketSigningKey)
+	if seedErr != nil || len(seed) != 32 {
+		seed, seedErr = base64.StdEncoding.DecodeString(accessTicketSigningKey)
+	}
+	if seedErr != nil || len(seed) != 32 {
+		return Config{}, fmt.Errorf("ACCESS_TICKET_SIGNING_KEY must be a base64-encoded 32-byte Ed25519 seed")
+	}
 	return Config{
-		HTTPPort:       port,
-		DatabaseURL:    databaseURL,
-		PublicBaseURL:  publicBaseURL,
-		AllowedOrigins: origins,
-		SessionTTL:     30 * 24 * time.Hour,
+		HTTPPort:               port,
+		DatabaseURL:            databaseURL,
+		PublicBaseURL:          publicBaseURL,
+		AllowedOrigins:         origins,
+		SessionTTL:             30 * 24 * time.Hour,
+		AccessTicketSigningKey: accessTicketSigningKey,
 	}, nil
 }
 

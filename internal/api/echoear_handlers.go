@@ -70,7 +70,7 @@ func (s *Server) registerAgent(c *gin.Context) {
 }
 
 func (s *Server) listAgents(c *gin.Context) {
-	items, err := s.db.ListAgents(currentUserID(c))
+	items, err := s.db.ListAccessibleAgents(currentUserID(c))
 	if err != nil {
 		fail(c, http.StatusInternalServerError, "查询 Agent 失败")
 		return
@@ -89,11 +89,12 @@ func (s *Server) requestHapiConnection(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "hapi 连接参数错误")
 		return
 	}
-	agent, err := s.db.AgentForUser(currentUserID(c), agentID)
-	if err != nil || agent == nil {
+	access, err := s.db.ResolveAgentAccess(currentUserID(c), agentID)
+	if err != nil || access == nil {
 		fail(c, http.StatusNotFound, "Agent 不存在")
 		return
 	}
+	agent := &access.Agent
 	if !agent.Online {
 		fail(c, http.StatusConflict, "Agent 当前离线")
 		return
@@ -102,9 +103,15 @@ func (s *Server) requestHapiConnection(c *gin.Context) {
 		fail(c, http.StatusBadRequest, message)
 		return
 	}
-	payload, _ := json.Marshal(gin.H{"request_id": request.RequestID, "envelope": request.Envelope})
-	item, err := s.db.EnqueueHapiConnection(currentUserID(c), agentID, request.RequestID, payload)
+	ticket, claims, err := s.issueAccessTicket(c, access, request.RequestID)
 	if err != nil {
+		fail(c, http.StatusTooManyRequests, "访问限制已生效: "+err.Error())
+		return
+	}
+	payload, _ := json.Marshal(gin.H{"request_id": request.RequestID, "envelope": request.Envelope, "access_ticket": ticket, "access": claims})
+	item, err := s.db.EnqueueHapiConnection(access.UserID, agent.AgentID, request.RequestID, payload)
+	if err != nil {
+		_ = s.db.RevokeAccessLease(claims.TicketID)
 		fail(c, http.StatusInternalServerError, "下发 hapi 连接请求失败")
 		return
 	}
@@ -183,11 +190,12 @@ func (s *Server) putHapiResponse(c *gin.Context) {
 
 func (s *Server) getHapiResponse(c *gin.Context) {
 	agentID, requestID := strings.TrimSpace(c.Param("agent_id")), strings.TrimSpace(c.Param("request_id"))
-	if agent, err := s.db.AgentForUser(currentUserID(c), agentID); err != nil || agent == nil {
+	access, err := s.db.ResolveAgentAccess(currentUserID(c), agentID)
+	if err != nil || access == nil {
 		fail(c, http.StatusNotFound, "Agent 不存在")
 		return
 	}
-	item, err := s.db.HapiResponse(currentUserID(c), agentID, requestID)
+	item, err := s.db.HapiResponse(access.UserID, access.AgentID, requestID)
 	if err != nil {
 		fail(c, http.StatusInternalServerError, "查询加密响应失败")
 		return

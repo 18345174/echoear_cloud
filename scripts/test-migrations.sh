@@ -72,7 +72,7 @@ SELECT
     (SELECT STRING_AGG(username || ':' || role, ',' ORDER BY id) FROM users);
 ")
 
-expected="1|1|1|3|3|12|existing-user:admin"
+expected="1|1|1|3|4|13|existing-user:admin"
 if [ "$summary" != "$expected" ]; then
   echo "unexpected migration state: $summary" >&2
   exit 1
@@ -83,13 +83,14 @@ SELECT COUNT(*)
 FROM unnest(ARRAY[
     'schema_migrations', 'app_settings', 'users', 'user_sessions', 'devices',
     'agents', 'hapi_connection_requests', 'hapi_connection_responses',
-    'user_settings', 'pairing_claims'
+	'user_settings', 'pairing_claims', 'agent_shares', 'agent_access_leases',
+	'agent_share_usage_daily', 'agent_share_usage_events', 'access_audit_log'
 ]) AS expected_table(name)
 WHERE to_regclass(name) IS NOT NULL;
 ")
 
-if [ "$table_count" != "10" ]; then
-  echo "expected 10 application tables, found $table_count" >&2
+if [ "$table_count" != "15" ]; then
+	echo "expected 15 application tables, found $table_count" >&2
   exit 1
 fi
 

@@ -39,7 +39,7 @@ func (db *DB) RegisterAgent(userID int64, input AgentInput) (*Agent, error) {
 			capabilities=CASE WHEN EXCLUDED.capabilities<>'{}'::jsonb THEN EXCLUDED.capabilities ELSE agents.capabilities END,
 			last_seen_at=NOW(),updated_at=NOW()
 		RETURNING id,user_id,agent_id,host_name,platform,app_version,preferred_device_uid,last_seen_at,
-			lan_base_url,public_key,key_id,key_algorithm,capabilities,created_at,updated_at
+			lan_base_url,public_key,key_id,key_algorithm,capabilities,created_at,updated_at,public_id::text
 	`, userID, agentID, strings.TrimSpace(input.HostName), strings.TrimSpace(input.Platform),
 		strings.TrimSpace(input.AppVersion), preferred, strings.TrimSpace(input.LanBaseURL),
 		strings.TrimSpace(input.PublicKey), strings.TrimSpace(input.KeyID), strings.TrimSpace(input.KeyAlgorithm),
@@ -50,7 +50,7 @@ func (db *DB) RegisterAgent(userID int64, input AgentInput) (*Agent, error) {
 func (db *DB) ListAgents(userID int64) ([]Agent, error) {
 	rows, err := db.Query(`
 		SELECT id,user_id,agent_id,host_name,platform,app_version,preferred_device_uid,last_seen_at,
-			lan_base_url,public_key,key_id,key_algorithm,capabilities,created_at,updated_at
+			lan_base_url,public_key,key_id,key_algorithm,capabilities,created_at,updated_at,public_id::text
 		FROM agents WHERE user_id=$1 ORDER BY updated_at DESC
 	`, userID)
 	if err != nil {
@@ -71,7 +71,7 @@ func (db *DB) ListAgents(userID int64) ([]Agent, error) {
 func (db *DB) AgentForUser(userID int64, agentID string) (*Agent, error) {
 	row := db.QueryRow(`
 		SELECT id,user_id,agent_id,host_name,platform,app_version,preferred_device_uid,last_seen_at,
-			lan_base_url,public_key,key_id,key_algorithm,capabilities,created_at,updated_at
+			lan_base_url,public_key,key_id,key_algorithm,capabilities,created_at,updated_at,public_id::text
 		FROM agents WHERE user_id=$1 AND agent_id=$2
 	`, userID, strings.TrimSpace(agentID))
 	item, err := scanAgent(row)
@@ -86,7 +86,7 @@ func scanAgent(row interface{ Scan(...any) error }) (*Agent, error) {
 	var preferred sql.NullString
 	err := row.Scan(&item.ID, &item.UserID, &item.AgentID, &item.HostName, &item.Platform, &item.AppVersion,
 		&preferred, &item.LastSeenAt, &item.LanBaseURL, &item.PublicKey, &item.KeyID, &item.KeyAlgorithm,
-		&item.Capabilities, &item.CreatedAt, &item.UpdatedAt)
+		&item.Capabilities, &item.CreatedAt, &item.UpdatedAt, &item.PublicID)
 	if err != nil {
 		return nil, err
 	}

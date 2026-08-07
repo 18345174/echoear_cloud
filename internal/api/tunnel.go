@@ -28,15 +28,17 @@ type tunnelKey struct {
 }
 
 type tunnelPeer struct {
-	conn         *websocket.Conn
-	key          tunnelKey
-	role         string
-	connectionID string
-	requestID    string
-	sessionID    string
-	send         chan []byte
-	closed       chan struct{}
-	closeOnce    sync.Once
+	conn          *websocket.Conn
+	key           tunnelKey
+	role          string
+	connectionID  string
+	requestID     string
+	sessionID     string
+	subjectUserID int64
+	accessID      string
+	send          chan []byte
+	closed        chan struct{}
+	closeOnce     sync.Once
 }
 
 type hapiTunnel struct {
@@ -47,10 +49,14 @@ type hapiTunnel struct {
 }
 
 type tunnelMessage struct {
-	Type         string          `json:"type"`
-	ConnectionID string          `json:"connection_id,omitempty"`
-	RequestID    string          `json:"request_id,omitempty"`
-	Payload      json.RawMessage `json:"payload,omitempty"`
+	Type              string          `json:"type"`
+	ConnectionID      string          `json:"connection_id,omitempty"`
+	RequestID         string          `json:"request_id,omitempty"`
+	Payload           json.RawMessage `json:"payload,omitempty"`
+	TraceID           string          `json:"trace_id,omitempty"`
+	PhoneTunnelSentAt int64           `json:"phone_tunnel_sent_at,omitempty"`
+	CloudReceivedAt   int64           `json:"cloud_received_at,omitempty"`
+	CloudForwardedAt  int64           `json:"cloud_forwarded_at,omitempty"`
 }
 
 func newHapiTunnel(db *database.DB) *hapiTunnel {
@@ -68,15 +74,6 @@ func (s *Server) hapiTunnel(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "agent_id 无效")
 		return
 	}
-	agent, err := s.db.AgentForUser(userID, agentID)
-	if err != nil {
-		fail(c, http.StatusInternalServerError, "Agent 校验失败")
-		return
-	}
-	if agent == nil {
-		fail(c, http.StatusNotFound, "Agent 不存在")
-		return
-	}
 	role, requestID := strings.ToLower(strings.TrimSpace(c.Query("role"))), strings.TrimSpace(c.Query("request_id"))
 	if role != "agent" && role != "mobile" {
 		fail(c, http.StatusBadRequest, "role 须为 agent 或 mobile")
@@ -86,13 +83,37 @@ func (s *Server) hapiTunnel(c *gin.Context) {
 		fail(c, http.StatusBadRequest, "request_id 无效")
 		return
 	}
+	resourceUserID, resourceAgentID, accessID := userID, agentID, agentID
+	if role == "agent" {
+		agent, err := s.db.AgentForUser(userID, agentID)
+		if err != nil {
+			fail(c, http.StatusInternalServerError, "Agent 校验失败")
+			return
+		}
+		if agent == nil {
+			fail(c, http.StatusNotFound, "Agent 不存在")
+			return
+		}
+	} else {
+		access, err := s.db.ResolveAgentAccess(userID, agentID)
+		if err != nil {
+			fail(c, http.StatusInternalServerError, "Agent 校验失败")
+			return
+		}
+		if access == nil || !s.db.AccessRequestValid(userID, access, requestID) {
+			fail(c, http.StatusForbidden, "Agent 访问票据无效或已过期")
+			return
+		}
+		resourceUserID, resourceAgentID = access.UserID, access.AgentID
+	}
 	conn, err := tunnelUpgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
 		return
 	}
 	peer := &tunnelPeer{
-		conn: conn, key: tunnelKey{userID: userID, agentID: agentID}, role: role,
+		conn: conn, key: tunnelKey{userID: resourceUserID, agentID: resourceAgentID}, role: role,
 		connectionID: randomTunnelID(), requestID: requestID, sessionID: c.GetString("session_id"),
+		subjectUserID: userID, accessID: accessID,
 		send: make(chan []byte, 8), closed: make(chan struct{}),
 	}
 	if !s.tunnel.attach(peer) {
@@ -177,12 +198,25 @@ func (t *hapiTunnel) readLoop(peer *tunnelPeer) {
 			continue
 		}
 		if peer.role == "mobile" {
+			cloudReceivedAt := time.Now().UnixMilli()
 			agent := t.agent(peer.key)
 			if agent == nil {
 				t.sendControl(peer, tunnelMessage{Type: "agent_offline"})
 				continue
 			}
-			t.sendControl(agent, tunnelMessage{Type: "data", ConnectionID: peer.connectionID, RequestID: peer.requestID, Payload: message.Payload})
+			traceID := strings.TrimSpace(message.TraceID)
+			if traceID != "" && !validIdentifier(traceID, 8, 128) {
+				traceID = ""
+			}
+			phoneTunnelSentAt := message.PhoneTunnelSentAt
+			if traceID == "" || phoneTunnelSentAt <= 0 {
+				phoneTunnelSentAt = 0
+			}
+			t.sendControl(agent, tunnelMessage{
+				Type: "data", ConnectionID: peer.connectionID, RequestID: peer.requestID, Payload: message.Payload,
+				TraceID: traceID, PhoneTunnelSentAt: phoneTunnelSentAt,
+				CloudReceivedAt: cloudReceivedAt, CloudForwardedAt: time.Now().UnixMilli(),
+			})
 			continue
 		}
 		mobile := t.mobile(peer.key, strings.TrimSpace(message.ConnectionID))
@@ -225,7 +259,14 @@ func (t *hapiTunnel) writeLoop(peer *tunnelPeer) {
 
 func (t *hapiTunnel) sessionAuthorized(peer *tunnelPeer) bool {
 	session, err := t.db.SessionByToken(peer.sessionID)
-	return err == nil && session != nil && session.UserID == peer.key.userID
+	if err != nil || session == nil || session.UserID != peer.subjectUserID {
+		return false
+	}
+	if peer.role == "agent" {
+		return session.UserID == peer.key.userID
+	}
+	access, err := t.db.ResolveAgentAccess(peer.subjectUserID, peer.accessID)
+	return err == nil && access != nil && access.UserID == peer.key.userID && access.AgentID == peer.key.agentID && t.db.AccessRequestValid(peer.subjectUserID, access, peer.requestID)
 }
 
 func (t *hapiTunnel) sendControl(peer *tunnelPeer, message tunnelMessage) {

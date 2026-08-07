@@ -18,34 +18,48 @@ import (
 )
 
 const (
-	AgentOnlineWindow = 2 * time.Minute
-	CommandTTL        = 2 * time.Minute
-	ResponseTTL       = 5 * time.Minute
-	DeviceAccessTTL   = 5 * time.Hour
-	DeviceRefreshTTL  = 100 * 365 * 24 * time.Hour
-	RoleAdmin         = "admin"
-	RoleUser          = "user"
+	AgentOnlineWindow  = 2 * time.Minute
+	CommandTTL         = 2 * time.Minute
+	ResponseTTL        = 5 * time.Minute
+	DeviceAccessTTL    = 5 * time.Hour
+	DeviceRefreshTTL   = 100 * 365 * 24 * time.Hour
+	RoleAdmin          = "admin"
+	RoleUser           = "user"
+	UserStatusActive   = "active"
+	UserStatusDisabled = "disabled"
+	UserStatusDeleted  = "deleted"
 )
 
 var ErrUsernameExists = errors.New("username already exists")
+var ErrLastActiveAdmin = errors.New("cannot modify last active administrator")
+var ErrSelfManagement = errors.New("cannot disable or delete current administrator")
 
 type Session struct {
 	UserID     int64
 	Username   string
 	Role       string
+	Status     string
 	SessionID  string
 	LastSeenAt time.Time
 	ExpiresAt  time.Time
 }
 
 type User struct {
-	ID              int64     `json:"id"`
-	Username        string    `json:"username"`
-	Email           string    `json:"email"`
-	Role            string    `json:"role"`
-	PasswordChanged bool      `json:"password_changed"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	ID              int64      `json:"id"`
+	Username        string     `json:"username"`
+	Email           string     `json:"email"`
+	Role            string     `json:"role"`
+	Status          string     `json:"status"`
+	PasswordChanged bool       `json:"password_changed"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+	LastLoginAt     *time.Time `json:"last_login_at,omitempty"`
+	DisabledAt      *time.Time `json:"disabled_at,omitempty"`
+	DisabledBy      *int64     `json:"disabled_by,omitempty"`
+	DisabledReason  string     `json:"disabled_reason"`
+	DeletedAt       *time.Time `json:"deleted_at,omitempty"`
+	DeletedBy       *int64     `json:"deleted_by,omitempty"`
+	DeletedReason   string     `json:"deleted_reason"`
 }
 
 type CreateUserInput struct {
@@ -119,6 +133,7 @@ type Agent struct {
 	LastSeenAt         *time.Time      `json:"last_seen_at"`
 	LanBaseURL         string          `json:"lan_base_url"`
 	PublicKey          string          `json:"public_key"`
+	PublicID           string          `json:"public_id"`
 	KeyID              string          `json:"key_id"`
 	KeyAlgorithm       string          `json:"key_algorithm"`
 	Capabilities       json.RawMessage `json:"capabilities"`
@@ -239,11 +254,12 @@ func (db *DB) CreateSession(userID int64, ip, userAgent string, ttl time.Duratio
 func (db *DB) SessionByToken(token string) (*Session, error) {
 	var item Session
 	err := db.QueryRow(`
-		SELECT s.user_id, u.username, u.role, s.last_seen_at, s.expires_at
+		SELECT s.user_id, u.username, u.role, u.status, s.last_seen_at, s.expires_at
 		FROM user_sessions s JOIN users u ON u.id = s.user_id
 		WHERE s.session_hash = $1 AND s.status = 'active' AND s.expires_at > NOW()
+		  AND u.status = 'active'
 	`, HashSecret(strings.TrimSpace(token))).Scan(
-		&item.UserID, &item.Username, &item.Role, &item.LastSeenAt, &item.ExpiresAt,
+		&item.UserID, &item.Username, &item.Role, &item.Status, &item.LastSeenAt, &item.ExpiresAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -279,9 +295,9 @@ func (db *DB) CreateUser(ctx context.Context, input CreateUserInput) (*User, err
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO users(username, password_hash, email, role, password_changed)
 		VALUES ($1, $2, $3, $4, FALSE)
-		RETURNING id, username, email, role, password_changed, created_at, updated_at
+		RETURNING id, username, email, role, status, password_changed, created_at, updated_at
 	`, strings.TrimSpace(input.Username), input.PasswordHash, strings.TrimSpace(input.Email), input.Role).Scan(
-		&user.ID, &user.Username, &user.Email, &user.Role, &user.PasswordChanged, &user.CreatedAt, &user.UpdatedAt,
+		&user.ID, &user.Username, &user.Email, &user.Role, &user.Status, &user.PasswordChanged, &user.CreatedAt, &user.UpdatedAt,
 	)
 	if err != nil {
 		var pqErr *pq.Error
