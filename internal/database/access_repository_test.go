@@ -4,12 +4,58 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/lib/pq"
 )
+
+func TestCreateAndAcceptSharePostgresIntegration(t *testing.T) {
+	databaseURL := os.Getenv("ECHOEAR_TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("ECHOEAR_TEST_DATABASE_URL is not set")
+	}
+	db, err := Open(databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	const ownerName = "share-integration-owner"
+	const granteeName = "share-integration-grantee"
+	_, _ = db.Exec(`DELETE FROM users WHERE username IN ($1,$2)`, ownerName, granteeName)
+	defer db.Exec(`DELETE FROM users WHERE username IN ($1,$2)`, ownerName, granteeName)
+
+	var ownerID, granteeID int64
+	if err := db.QueryRow(`INSERT INTO users(username,password_hash,email,role) VALUES($1,'test','owner@example.com','admin') RETURNING id`, ownerName).Scan(&ownerID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`INSERT INTO users(username,password_hash,email,role) VALUES($1,'test','grantee@example.com','user') RETURNING id`, granteeName).Scan(&granteeID); err != nil {
+		t.Fatal(err)
+	}
+	var publicID string
+	if err := db.QueryRow(`INSERT INTO agents(user_id,agent_id,host_name) VALUES($1,'integration-agent','integration-host') RETURNING public_id::text`, ownerID).Scan(&publicID); err != nil {
+		t.Fatal(err)
+	}
+
+	policy := json.RawMessage(`{"allowed_flavors":["codex"]}`)
+	share, err := db.CreateShare(context.Background(), ownerID, publicID, granteeName, time.Now().UTC(), nil, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if share == nil || share.Status != ShareStatusPending || share.GranteeUserID != granteeID {
+		t.Fatalf("unexpected share: %#v", share)
+	}
+	accepted, err := db.TransitionShare(context.Background(), granteeID, share.ID, "accept", "", nil, nil, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accepted == nil || accepted.Status != ShareStatusActive {
+		t.Fatalf("unexpected accepted share: %#v", accepted)
+	}
+}
 
 func TestCreateShareCleansOrphansAndClassifiesOpenConflict(t *testing.T) {
 	raw, mock, err := sqlmock.New()

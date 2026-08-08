@@ -94,4 +94,7 @@ if [ "$table_count" != "15" ]; then
   exit 1
 fi
 
+ECHOEAR_TEST_DATABASE_URL="host=$SOCKET_DIR port=$PORT user=postgres dbname=echoear_migration_test sslmode=disable" \
+  go test "$ROOT/internal/database" -run TestCreateAndAcceptSharePostgresIntegration -count=1
+
 echo "migration replay passed: $summary; tables=$table_count"

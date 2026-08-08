@@ -365,7 +365,7 @@ func (db *DB) CreateShare(ctx context.Context, ownerID int64, agentPublicID, gra
 		return nil, wrapShareCreateFailure("insert", err)
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO access_audit_log(actor_user_id,action,target_type,target_id,owner_user_id,grantee_user_id,agent_id,share_id,details)
-		VALUES($1,'share.create','share',$2,$1,$3,$4,$2::uuid,$5::jsonb)`, ownerID, shareID, granteeID, agentID, string(JSONOrEmpty(policy))); err != nil {
+		VALUES($1,'share.create','share',$2::text,$1,$3,$4,$2::uuid,$5::jsonb)`, ownerID, shareID, granteeID, agentID, string(JSONOrEmpty(policy))); err != nil {
 		return nil, wrapShareCreateFailure("audit", err)
 	}
 	if err = tx.Commit(); err != nil {
@@ -460,7 +460,7 @@ func (db *DB) TransitionShare(ctx context.Context, actorID int64, shareID, actio
 		return nil, err
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO access_audit_log(actor_user_id,action,target_type,target_id,owner_user_id,grantee_user_id,agent_id,share_id,reason)
-		VALUES($1,$2,'share',$3,$4,$5,$6,$3::uuid,$7)`, actorID, "share."+action, shareID, ownerID, granteeID, agentID, strings.TrimSpace(reason)); err != nil {
+		VALUES($1,$2,'share',$3::text,$4,$5,$6,$3::uuid,$7)`, actorID, "share."+action, shareID, ownerID, granteeID, agentID, strings.TrimSpace(reason)); err != nil {
 		return nil, err
 	}
 	if err = tx.Commit(); err != nil {
