@@ -2,11 +2,81 @@ package database
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/lib/pq"
 )
+
+func TestCreateShareCleansOrphansAndClassifiesOpenConflict(t *testing.T) {
+	raw, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	db := &DB{DB: raw}
+	now := time.Now().UTC()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT id FROM agents").
+		WithArgs(int64(1), "agent-public").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(10))
+	mock.ExpectQuery("SELECT id FROM users").
+		WithArgs("pengbangle").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(4))
+	mock.ExpectExec("DELETE FROM agent_shares").
+		WithArgs(int64(10), int64(4)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery("INSERT INTO agent_shares").
+		WithArgs(int64(10), int64(1), int64(4), now, nil, "{}").
+		WillReturnError(&pq.Error{Code: "23505", Constraint: "agent_shares_open_unique"})
+	mock.ExpectRollback()
+
+	_, err = db.CreateShare(context.Background(), 1, "agent-public", "pengbangle", now, nil, json.RawMessage(`{}`))
+	if !errors.Is(err, ErrOpenShareExists) {
+		t.Fatalf("expected open share conflict, got %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCreateShareReportsDatabaseStageAndSQLState(t *testing.T) {
+	raw, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	db := &DB{DB: raw}
+	now := time.Now().UTC()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT id FROM agents").
+		WithArgs(int64(1), "agent-public").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(10))
+	mock.ExpectQuery("SELECT id FROM users").
+		WithArgs("pengbangle").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(4))
+	mock.ExpectExec("DELETE FROM agent_shares").
+		WithArgs(int64(10), int64(4)).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("INSERT INTO agent_shares").
+		WithArgs(int64(10), int64(1), int64(4), now, nil, "{}").
+		WillReturnError(&pq.Error{Code: "23502", Constraint: "agent_shares_policy_check"})
+	mock.ExpectRollback()
+
+	_, err = db.CreateShare(context.Background(), 1, "agent-public", "pengbangle", now, nil, json.RawMessage(`{}`))
+	stage, sqlState, constraint := ShareCreateFailureInfo(err)
+	if stage != "insert" || sqlState != "23502" || constraint != "agent_shares_policy_check" {
+		t.Fatalf("unexpected failure info: stage=%q state=%q constraint=%q err=%v", stage, sqlState, constraint, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestRecordShareUsageIsIdempotent(t *testing.T) {
 	raw, mock, err := sqlmock.New()

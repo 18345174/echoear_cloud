@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/lib/pq"
 )
 
 const (
@@ -19,6 +21,41 @@ const (
 )
 
 var ErrShareDailyLimit = errors.New("share daily task limit reached")
+var ErrOpenShareExists = errors.New("open share already exists")
+
+type ShareCreateFailure struct {
+	Stage      string
+	SQLState   string
+	Constraint string
+	Err        error
+}
+
+func (e *ShareCreateFailure) Error() string {
+	return fmt.Sprintf("create share %s: %v", e.Stage, e.Err)
+}
+
+func (e *ShareCreateFailure) Unwrap() error { return e.Err }
+
+func wrapShareCreateFailure(stage string, err error) error {
+	if err == nil {
+		return nil
+	}
+	failure := &ShareCreateFailure{Stage: stage, Err: err}
+	var postgresError *pq.Error
+	if errors.As(err, &postgresError) {
+		failure.SQLState = string(postgresError.Code)
+		failure.Constraint = postgresError.Constraint
+	}
+	return failure
+}
+
+func ShareCreateFailureInfo(err error) (stage, sqlState, constraint string) {
+	var failure *ShareCreateFailure
+	if errors.As(err, &failure) {
+		return failure.Stage, failure.SQLState, failure.Constraint
+	}
+	return "unknown", "", ""
+}
 
 type ShareUsage struct {
 	ShareID         string `json:"share_id"`
@@ -293,34 +330,52 @@ func (db *DB) CreateShare(ctx context.Context, ownerID int64, agentPublicID, gra
 	}
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, err
+		return nil, wrapShareCreateFailure("begin", err)
 	}
 	defer tx.Rollback()
 	var agentID int64
 	if err = tx.QueryRowContext(ctx, `SELECT id FROM agents WHERE user_id=$1 AND public_id::text=$2`, ownerID, strings.TrimSpace(agentPublicID)).Scan(&agentID); err != nil {
-		return nil, err
+		return nil, wrapShareCreateFailure("resolve_agent", err)
 	}
 	var granteeID int64
 	if err = tx.QueryRowContext(ctx, `SELECT id FROM users WHERE LOWER(username)=LOWER($1) AND status='active'`, strings.TrimSpace(granteeUsername)).Scan(&granteeID); err != nil {
-		return nil, err
+		return nil, wrapShareCreateFailure("resolve_grantee", err)
 	}
 	if granteeID == ownerID {
-		return nil, fmt.Errorf("cannot share with owner")
+		return nil, wrapShareCreateFailure("validate_grantee", fmt.Errorf("cannot share with owner"))
+	}
+	// Older deployments may contain an open row whose owner no longer exists.
+	// Such a row is hidden by ListShares' joins but still occupies the open-share
+	// unique index, so remove it before attempting the new invitation.
+	if _, err = tx.ExecContext(ctx, `DELETE FROM agent_shares s
+		WHERE s.agent_id=$1 AND s.grantee_user_id=$2 AND s.status IN ('pending','active')
+		AND (NOT EXISTS (SELECT 1 FROM agents a WHERE a.id=s.agent_id)
+			OR NOT EXISTS (SELECT 1 FROM users u WHERE u.id=s.owner_user_id)
+			OR NOT EXISTS (SELECT 1 FROM users u WHERE u.id=s.grantee_user_id))`, agentID, granteeID); err != nil {
+		return nil, wrapShareCreateFailure("cleanup_orphans", err)
 	}
 	var shareID string
 	err = tx.QueryRowContext(ctx, `INSERT INTO agent_shares(agent_id,owner_user_id,grantee_user_id,valid_from,valid_until,policy,created_by)
 		VALUES($1,$2,$3,$4,$5,$6::jsonb,$2) RETURNING id::text`, agentID, ownerID, granteeID, validFrom, validUntil, string(JSONOrEmpty(policy))).Scan(&shareID)
 	if err != nil {
-		return nil, err
+		var postgresError *pq.Error
+		if errors.As(err, &postgresError) && postgresError.Code == "23505" && postgresError.Constraint == "agent_shares_open_unique" {
+			return nil, fmt.Errorf("%w: %v", ErrOpenShareExists, err)
+		}
+		return nil, wrapShareCreateFailure("insert", err)
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO access_audit_log(actor_user_id,action,target_type,target_id,owner_user_id,grantee_user_id,agent_id,share_id,details)
 		VALUES($1,'share.create','share',$2,$1,$3,$4,$2::uuid,$5::jsonb)`, ownerID, shareID, granteeID, agentID, string(JSONOrEmpty(policy))); err != nil {
-		return nil, err
+		return nil, wrapShareCreateFailure("audit", err)
 	}
 	if err = tx.Commit(); err != nil {
-		return nil, err
+		return nil, wrapShareCreateFailure("commit", err)
 	}
-	return db.ShareByID(shareID)
+	item, err := db.ShareByID(shareID)
+	if err != nil {
+		return nil, wrapShareCreateFailure("hydrate", err)
+	}
+	return item, nil
 }
 
 func (db *DB) ShareByID(id string) (*AgentShare, error) {

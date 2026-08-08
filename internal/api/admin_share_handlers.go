@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log"
 	"strconv"
 	"strings"
 	"time"
@@ -181,8 +183,32 @@ func (s *Server) createAgentShare(c *gin.Context) {
 		fail(c, 404, "Agent 或接收账号不存在")
 		return
 	}
+	if errors.Is(err, database.ErrOpenShareExists) {
+		fail(c, 409, "已存在待处理或有效分享")
+		return
+	}
 	if err != nil {
-		fail(c, 409, "创建分享失败，可能已有待处理或有效分享")
+		stage, sqlState, constraint := database.ShareCreateFailureInfo(err)
+		errorCode := "share.create." + stage
+		if sqlState != "" {
+			errorCode += "." + sqlState
+		}
+		log.Printf("create share failed owner=%d agent=%q grantee=%q stage=%s sqlstate=%s constraint=%s: %v",
+			currentUserID(c), c.Param("agent_id"), strings.TrimSpace(request.GranteeUsername), stage, sqlState, constraint, err)
+		details, _ := json.Marshal(gin.H{"stage": stage, "sqlstate": sqlState, "constraint": constraint})
+		actor := currentUserID(c)
+		_ = s.db.AddAudit(database.AuditInput{
+			ActorUserID: &actor,
+			Action:      "share.create",
+			TargetType:  "agent",
+			TargetID:    c.Param("agent_id"),
+			Outcome:     "failed",
+			Reason:      errorCode,
+			Details:     details,
+			IPAddress:   c.ClientIP(),
+			UserAgent:   c.Request.UserAgent(),
+		})
+		fail(c, 500, fmt.Sprintf("创建分享失败（错误码 %s）", errorCode))
 		return
 	}
 	ok(c, "分享邀请已创建", item)
