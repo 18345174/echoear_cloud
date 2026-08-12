@@ -25,6 +25,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Validate deployment manifests
+        run: |
+          set -euo pipefail
+          bash -n deploy/oci/deploy.sh
+          bash -n deploy/oci/validate-relay.sh
+          docker compose \
+            --env-file deploy/oci/.env.example \
+            -f deploy/oci/docker-compose.yml \
+            config --quiet
+          docker compose \
+            --env-file deploy/oci/.env.example \
+            -f deploy/oci/docker-compose.yml \
+            --profile relay \
+            config --quiet
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 

@@ -11,6 +11,7 @@
 | `.env` | 简单占位配置（请自行改密码 / PUBLIC_BASE_URL） |
 | `deploy.sh` | 拉最新镜像并重启；GitHub Actions 远程只执行它 |
 | `README.md` | 服务器侧简要说明 |
+| `relay_data/` | 自托管 HAPI Relay 的 WireGuard、证书和访问控制状态 |
 
 ## 专用 SSH 部署密钥
 
@@ -58,6 +59,15 @@ main push
   → Deploy OCI（SSH 跑 deploy.sh）
 ```
 
+新版 `deploy.sh` 在拉镜像前会从仓库的 `main` 分支原子更新
+`docker-compose.yml` 和自身，然后立刻由下载后的脚本继续部署。服务器
+`.env` 不会被覆盖。这个能力需要先在服务器上手工安装一次新版
+`deploy.sh`；旧版脚本本身无法自我获得这项能力。
+
+如需临时固定部署清单版本，可在服务器 `.env` 中设置
+`ECHOEAR_DEPLOY_REF=<commit-sha>`。紧急情况下在 `.env` 设置
+`ECHOEAR_SYNC_DEPLOY_FILES=false` 可停止自动同步。
+
 ## 手动部署
 
 服务器上：
@@ -96,6 +106,83 @@ curl -fsS https://xu-hapi.flyooo.uk/healthz
 | 证书 | Traefik `letsencrypt` |
 
 DNS 由 Cloudflare 指向本机源站（橙云即可，与 `imagegen` / `way` 同套路）。
+
+## 自托管 HAPI Relay
+
+Relay 是部署栈中的可选 `tunwg` 容器。默认 profile 关闭，不影响现有 API。
+启用后 Controller 的本地 HAPI Hub 通过 WireGuard/TCP Relay 接入该服务，App
+从加密 descriptor 得到动态 HTTPS 地址后直接访问 Hub；现有 EchoEar
+WebSocket 隧道继续作为回退。
+
+### 首次引导
+
+1. 恢复 OCI Console、Cloud Shell 或普通运维 SSH 访问。
+2. 将本仓库的 `deploy/oci/deploy.sh` 安装到
+   `/opt/stack/echoear_cloud/deploy.sh`，权限设为 `0755`。
+3. 保持 `.env` 中 `ECHOEAR_RELAY_ENABLED=false`，先执行一次 `deploy.sh`。
+4. 确认 API `/healthz` 正常，再继续配置 Relay。
+
+### DNS 与网络
+
+假设 Relay 根域名为 `relay.xu-hapi.flyooo.uk`，创建两个指向 OCI 公网 IP
+的 A 记录：
+
+```text
+relay.xu-hapi.flyooo.uk       A  <OCI_PUBLIC_IP>
+*.relay.xu-hapi.flyooo.uk     A  <OCI_PUBLIC_IP>
+```
+
+这两个记录必须使用 Cloudflare **DNS only（灰云）**。Cloudflare HTTP
+代理会终止 TLS，破坏 tunwg 的 SNI 路由和端到端证书签发。
+
+OCI Security List/NSG 与主机防火墙需要允许：
+
+| 协议 | 端口 | 用途 |
+| --- | --- | --- |
+| TCP | 80 | ACME HTTP-01 和 HTTPS 跳转 |
+| TCP | 443 | Relay API、TLS passthrough 和 TCP fallback |
+| UDP | 443 | WireGuard 默认高速通道 |
+
+TCP 80/443 仍由现有 Traefik 监听。Relay 通过 Docker labels 接收自己的
+根域名和动态子域名，其中 443 使用 TLS passthrough；UDP 443 由 Relay
+容器直接发布。Traefik 必须支持 `HostSNIRegexp`。
+
+### 服务器配置
+
+在 `/opt/stack/echoear_cloud/.env` 增加：
+
+```dotenv
+ECHOEAR_RELAY_ENABLED=true
+ECHOEAR_RELAY_IMAGE=ghcr.io/tiann/tunwg:eb51a7f
+ECHOEAR_RELAY_DOMAIN=relay.xu-hapi.flyooo.uk
+ECHOEAR_RELAY_PUBLIC_IP=<OCI_PUBLIC_IP>
+ECHOEAR_RELAY_AUTH_SECRET=<openssl-rand-hex-32>
+ECHOEAR_RELAY_QUOTA_BYTES=0
+ECHOEAR_RELAY_SSL_EMAIL=<operator-email>
+```
+
+`ECHOEAR_RELAY_AUTH_SECRET` 只保存在服务器 `.env`，不能提交。首次启用前
+创建并保护持久化目录：
+
+```bash
+install -d -m 0700 /opt/stack/echoear_cloud/relay_data
+cd /opt/stack/echoear_cloud
+./deploy.sh
+./validate-relay.sh .env
+```
+
+部署健康检查对 `/issue` 使用无副作用 GET，并预期 HTTP 405；不会消耗
+Relay 的每 IP 签发额度。随后还必须用 Controller 做一次真实 `--relay`
+连接，分别验证 UDP 默认模式和 `HAPI_RELAY_FORCE_TCP=true` 回退模式。
+
+Controller 生产配置最终应使用：
+
+```dotenv
+HAPI_RELAY_API=relay.xu-hapi.flyooo.uk
+```
+
+不要在公网端点使用共享 `HAPI_RELAY_AUTH`。Controller 会通过 `/issue`
+获取每个 Hub 独立、可撤销的签名 key，并持久化在本地 HAPI 设置中。
 
 ## 配置文件
 

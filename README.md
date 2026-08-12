@@ -13,6 +13,7 @@ tunnel. It has no runtime dependency on `mqtt_server`.
 - End-to-end encrypted HAPI relay: the service only routes opaque frames
 - CI-published multi-arch container image on GitHub Container Registry (GHCR)
 - Optional OCI auto-deploy after each successful image publish
+- Optional self-hosted HAPI Relay deployment with per-Hub issued credentials
 
 The clean schema intentionally excludes the retired ACP task/message history
 tables. HAPI remains the source of truth for tasks, messages, models, tools,
@@ -55,6 +56,11 @@ Server layout, dedicated SSH deploy key, and secrets:
 Server path: `/opt/stack/echoear_cloud`  
 Remote command: `/opt/stack/echoear_cloud/deploy.sh`  
 Local health on server: `http://127.0.0.1:18080/healthz`
+
+After a one-time server bootstrap, the deployment script also refreshes its
+versioned Compose manifest from this repository. The optional Relay remains
+disabled until its DNS, firewall rules, persisted state, and server-only secret
+are configured. See [deploy/oci/README.md](deploy/oci/README.md).
 
 ## Start
 

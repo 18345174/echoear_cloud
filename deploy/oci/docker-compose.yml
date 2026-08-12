@@ -69,6 +69,47 @@ services:
       - traefik.http.services.echoear.loadbalancer.server.port=8080
       - traefik.http.services.echoear.loadbalancer.passHostHeader=true
 
+  relay:
+    image: ${ECHOEAR_RELAY_IMAGE:-ghcr.io/tiann/tunwg:eb51a7f}
+    container_name: echoear-relay
+    profiles: ["relay"]
+    pull_policy: always
+    restart: unless-stopped
+    environment:
+      TUNWG_RUN_SERVER: "true"
+      TUNWG_PATH: /data
+      TUNWG_PORT: "443"
+      # deploy.sh rejects these placeholders before enabling the relay profile.
+      TUNWG_IP: ${ECHOEAR_RELAY_PUBLIC_IP:-127.0.0.1}
+      TUNWG_API: ${ECHOEAR_RELAY_DOMAIN:-relay.invalid}
+      TUNWG_AUTH_SECRET: ${ECHOEAR_RELAY_AUTH_SECRET:-disabled}
+      TUNWG_QUOTA_BYTES: ${ECHOEAR_RELAY_QUOTA_BYTES:-0}
+      TUNWG_SSL_EMAIL: ${ECHOEAR_RELAY_SSL_EMAIL:-}
+    volumes:
+      - ./relay_data:/data
+    ports:
+      # WireGuard uses UDP directly. TCP 80/443 remain owned by Traefik.
+      - "443:443/udp"
+    expose:
+      - "80"
+      - "443"
+    networks:
+      - proxy
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=proxy
+      # tunwg terminates TLS so Hub traffic stays encrypted through the relay.
+      - traefik.tcp.routers.echoear-relay.rule=HostSNI(`${ECHOEAR_RELAY_DOMAIN:-relay.invalid}`) || HostSNIRegexp(`^.+\\.${ECHOEAR_RELAY_DOMAIN:-relay.invalid}`)
+      - traefik.tcp.routers.echoear-relay.entrypoints=websecure
+      - traefik.tcp.routers.echoear-relay.tls.passthrough=true
+      - traefik.tcp.routers.echoear-relay.service=echoear-relay
+      - traefik.tcp.services.echoear-relay.loadbalancer.server.port=443
+      # ACME HTTP-01 requests for generated Hub subdomains enter on port 80.
+      - traefik.http.routers.echoear-relay-http.rule=Host(`${ECHOEAR_RELAY_DOMAIN:-relay.invalid}`) || HostRegexp(`^.+\\.${ECHOEAR_RELAY_DOMAIN:-relay.invalid}`)
+      - traefik.http.routers.echoear-relay-http.entrypoints=web
+      - traefik.http.routers.echoear-relay-http.service=echoear-relay-http
+      - traefik.http.services.echoear-relay-http.loadbalancer.server.port=80
+
 networks:
   echoear:
     driver: bridge
