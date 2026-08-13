@@ -36,16 +36,18 @@ type tunnelPeer struct {
 	sessionID     string
 	subjectUserID int64
 	accessID      string
+	gateway       bool
 	send          chan []byte
 	closed        chan struct{}
 	closeOnce     sync.Once
 }
 
 type hapiTunnel struct {
-	mu      sync.RWMutex
-	db      *database.DB
-	agents  map[tunnelKey]*tunnelPeer
-	mobiles map[tunnelKey]map[string]*tunnelPeer
+	mu       sync.RWMutex
+	db       *database.DB
+	agents   map[tunnelKey]*tunnelPeer
+	mobiles  map[tunnelKey]map[string]*tunnelPeer
+	gateways map[tunnelKey]map[string]*gatewayRequest
 }
 
 type tunnelMessage struct {
@@ -60,7 +62,11 @@ type tunnelMessage struct {
 }
 
 func newHapiTunnel(db *database.DB) *hapiTunnel {
-	return &hapiTunnel{db: db, agents: make(map[tunnelKey]*tunnelPeer), mobiles: make(map[tunnelKey]map[string]*tunnelPeer)}
+	return &hapiTunnel{
+		db: db, agents: make(map[tunnelKey]*tunnelPeer),
+		mobiles:  make(map[tunnelKey]map[string]*tunnelPeer),
+		gateways: make(map[tunnelKey]map[string]*gatewayRequest),
+	}
 }
 
 var tunnelUpgrader = websocket.Upgrader{
@@ -114,7 +120,8 @@ func (s *Server) hapiTunnel(c *gin.Context) {
 		conn: conn, key: tunnelKey{userID: resourceUserID, agentID: resourceAgentID}, role: role,
 		connectionID: randomTunnelID(), requestID: requestID, sessionID: c.GetString("session_id"),
 		subjectUserID: userID, accessID: accessID,
-		send: make(chan []byte, 8), closed: make(chan struct{}),
+		gateway: role == "agent" && c.Query("gateway") == "1",
+		send:    make(chan []byte, 8), closed: make(chan struct{}),
 	}
 	if !s.tunnel.attach(peer) {
 		peer.close()
@@ -140,6 +147,10 @@ func (t *hapiTunnel) attach(peer *tunnelPeer) bool {
 		if previous := t.agents[peer.key]; previous != nil {
 			previous.close()
 		}
+		for _, gateway := range t.gateways[peer.key] {
+			gateway.close()
+		}
+		delete(t.gateways, peer.key)
 		t.agents[peer.key] = peer
 		for _, mobile := range t.mobiles[peer.key] {
 			t.sendControl(mobile, tunnelMessage{Type: "agent_online"})
@@ -163,6 +174,10 @@ func (t *hapiTunnel) detach(peer *tunnelPeer) {
 	if peer.role == "agent" {
 		if t.agents[peer.key] == peer {
 			delete(t.agents, peer.key)
+			for _, gateway := range t.gateways[peer.key] {
+				gateway.close()
+			}
+			delete(t.gateways, peer.key)
 			for _, mobile := range t.mobiles[peer.key] {
 				t.sendControl(mobile, tunnelMessage{Type: "agent_offline"})
 			}
@@ -193,7 +208,8 @@ func (t *hapiTunnel) readLoop(peer *tunnelPeer) {
 			continue
 		}
 		var message tunnelMessage
-		if json.Unmarshal(raw, &message) != nil || message.Type != "data" || len(message.Payload) == 0 {
+		if json.Unmarshal(raw, &message) != nil || len(message.Payload) == 0 ||
+			(message.Type != "data" && (peer.role != "agent" || message.Type != "gateway_data")) {
 			t.sendControl(peer, tunnelMessage{Type: "invalid_frame"})
 			continue
 		}
@@ -219,7 +235,12 @@ func (t *hapiTunnel) readLoop(peer *tunnelPeer) {
 			})
 			continue
 		}
-		mobile := t.mobile(peer.key, strings.TrimSpace(message.ConnectionID))
+		connectionID := strings.TrimSpace(message.ConnectionID)
+		if message.Type == "gateway_data" {
+			t.deliverGateway(peer.key, connectionID, message.Payload)
+			continue
+		}
+		mobile := t.mobile(peer.key, connectionID)
 		if mobile == nil {
 			continue
 		}
@@ -269,18 +290,21 @@ func (t *hapiTunnel) sessionAuthorized(peer *tunnelPeer) bool {
 	return err == nil && access != nil && access.UserID == peer.key.userID && access.AgentID == peer.key.agentID && t.db.AccessRequestValid(peer.subjectUserID, access, peer.requestID)
 }
 
-func (t *hapiTunnel) sendControl(peer *tunnelPeer, message tunnelMessage) {
+func (t *hapiTunnel) sendControl(peer *tunnelPeer, message tunnelMessage) bool {
 	raw, err := json.Marshal(message)
 	if err != nil {
-		return
+		return false
 	}
 	timer := time.NewTimer(5 * time.Second)
 	defer timer.Stop()
 	select {
 	case peer.send <- raw:
+		return true
 	case <-peer.closed:
+		return false
 	case <-timer.C:
 		peer.close()
+		return false
 	}
 }
 

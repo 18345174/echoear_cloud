@@ -20,7 +20,7 @@ const (
 	hapiAlgorithm      = "RSA-OAEP-256+A256GCM"
 	hapiBodyMax        = 32 * 1024
 	hapiCiphertextMax  = 16 * 1024
-	apiContractVersion = 13
+	apiContractVersion = 14
 )
 
 type Server struct {
@@ -39,7 +39,7 @@ func NewServer(db *database.DB, cfg config.Config) *Server {
 	corsConfig := cors.Config{
 		AllowOrigins:     cfg.AllowedOrigins,
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"Authorization", "Content-Type", "Accept"},
+		AllowHeaders:     []string{"Authorization", "Content-Type", "Accept", "X-EchoEar-Session"},
 		ExposeHeaders:    []string{"Content-Length"},
 		AllowCredentials: !contains(cfg.AllowedOrigins, "*"),
 		MaxAge:           12 * time.Hour,
@@ -100,6 +100,10 @@ func NewServer(db *database.DB, cfg config.Config) *Server {
 	echoear.PUT("/settings", s.putSettings)
 	echoear.POST("/pairing/claim", s.claimPairing)
 	echoear.POST("/pairing/confirm", s.confirmPairing)
+
+	hapiGateway := api.Group("/echoear/agents/:agent_id/hapi/gateway/:request_id")
+	hapiGateway.Use(s.requireGatewaySession())
+	hapiGateway.Any("/*path", s.hapiGateway)
 	s.router = router
 	return s
 }
@@ -122,26 +126,41 @@ func (s *Server) requireSession() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
-		token := strings.TrimSpace(parts[1])
-		session, err := s.db.SessionByToken(token)
-		if err != nil {
-			fail(c, http.StatusInternalServerError, "会话校验失败")
-			c.Abort()
-			return
-		}
-		if session == nil {
-			fail(c, http.StatusUnauthorized, "会话无效或已过期")
-			c.Abort()
-			return
-		}
-		if time.Since(session.LastSeenAt) >= 5*time.Minute {
-			_ = s.db.TouchSession(token)
-		}
-		c.Set("session", session)
-		c.Set("session_id", token)
-		c.Set("user_id", session.UserID)
-		c.Next()
+		s.requireSessionToken(c, strings.TrimSpace(parts[1]))
 	}
+}
+
+func (s *Server) requireGatewaySession() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		token := strings.TrimSpace(c.GetHeader("X-EchoEar-Session"))
+		if token == "" {
+			fail(c, http.StatusUnauthorized, "未提供有效会话")
+			c.Abort()
+			return
+		}
+		s.requireSessionToken(c, token)
+	}
+}
+
+func (s *Server) requireSessionToken(c *gin.Context, token string) {
+	session, err := s.db.SessionByToken(token)
+	if err != nil {
+		fail(c, http.StatusInternalServerError, "会话校验失败")
+		c.Abort()
+		return
+	}
+	if session == nil {
+		fail(c, http.StatusUnauthorized, "会话无效或已过期")
+		c.Abort()
+		return
+	}
+	if time.Since(session.LastSeenAt) >= 5*time.Minute {
+		_ = s.db.TouchSession(token)
+	}
+	c.Set("session", session)
+	c.Set("session_id", token)
+	c.Set("user_id", session.UserID)
+	c.Next()
 }
 
 func (s *Server) requireAdmin() gin.HandlerFunc {
