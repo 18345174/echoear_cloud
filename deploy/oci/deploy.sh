@@ -40,21 +40,61 @@ download_deploy_file() {
   local temporary="$destination.next"
 
   log "syncing $name from $DEPLOY_REPOSITORY@$DEPLOY_REF"
-  curl --fail --silent --show-error --location \
+  if ! curl --fail --silent --show-error --location \
     --connect-timeout 10 --max-time 30 \
-    "$RAW_BASE_URL/$name" --output "$temporary"
-  if [[ ! -s "$temporary" ]]; then
-    log "ERROR: downloaded deployment file is empty: $name"
+    "$RAW_BASE_URL/$name" --output "$temporary"; then
+    log "WARNING: unable to download deployment file: $name"
     rm -f "$temporary"
-    exit 1
+    return 1
+  fi
+  if [[ ! -s "$temporary" ]]; then
+    log "WARNING: downloaded deployment file is empty: $name"
+    rm -f "$temporary"
+    return 1
   fi
   if [[ "$name" == *.sh ]]; then
-    bash -n "$temporary"
+    if ! bash -n "$temporary"; then
+      log "WARNING: downloaded shell script is invalid: $name"
+      rm -f "$temporary"
+      return 1
+    fi
     chmod 0755 "$temporary"
   fi
   if [[ "$name" == "docker-compose.yml" ]]; then
-    docker compose --env-file "$ENV_FILE" -f "$temporary" --profile relay config --quiet
+    if ! docker compose --env-file "$ENV_FILE" -f "$temporary" --profile relay config --quiet; then
+      log "WARNING: downloaded Compose manifest is invalid"
+      rm -f "$temporary"
+      return 1
+    fi
   fi
+}
+
+DEPLOY_FILES=(docker-compose.yml deploy.sh validate-relay.sh)
+
+cleanup_deploy_downloads() {
+  local name
+  for name in "${DEPLOY_FILES[@]}"; do
+    rm -f "$STACK_DIR/$name.next"
+  done
+}
+
+download_deploy_bundle() {
+  local name
+  cleanup_deploy_downloads
+  for name in "${DEPLOY_FILES[@]}"; do
+    if ! download_deploy_file "$name"; then
+      cleanup_deploy_downloads
+      return 1
+    fi
+  done
+}
+
+install_deploy_bundle() {
+  local name
+  # Every file is downloaded and validated before any installed file changes.
+  for name in "${DEPLOY_FILES[@]}"; do
+    mv "$STACK_DIR/$name.next" "$STACK_DIR/$name"
+  done
 }
 
 # The force-command SSH key invokes the already-installed script. Once this
@@ -62,15 +102,20 @@ download_deploy_file() {
 # versioned Compose manifest and the script itself before pulling images.
 sync_deploy_files="${ECHOEAR_SYNC_DEPLOY_FILES:-$(env_file_value ECHOEAR_SYNC_DEPLOY_FILES)}"
 sync_deploy_files="$(printf '%s' "${sync_deploy_files:-true}" | tr '[:upper:]' '[:lower:]')"
+deploy_sync_required="${ECHOEAR_DEPLOY_SYNC_REQUIRED:-$(env_file_value ECHOEAR_DEPLOY_SYNC_REQUIRED)}"
+deploy_sync_required="$(printf '%s' "${deploy_sync_required:-false}" | tr '[:upper:]' '[:lower:]')"
 if [[ "$sync_deploy_files" == "true" && "${ECHOEAR_DEPLOY_SYNCED:-}" != "1" ]]; then
-  download_deploy_file docker-compose.yml
-  download_deploy_file deploy.sh
-  download_deploy_file validate-relay.sh
-  mv "$STACK_DIR/docker-compose.yml.next" "$STACK_DIR/docker-compose.yml"
-  mv "$STACK_DIR/deploy.sh.next" "$STACK_DIR/deploy.sh"
-  mv "$STACK_DIR/validate-relay.sh.next" "$STACK_DIR/validate-relay.sh"
-  export ECHOEAR_DEPLOY_SYNCED=1
-  exec "$STACK_DIR/deploy.sh" "$@"
+  if download_deploy_bundle; then
+    install_deploy_bundle
+    export ECHOEAR_DEPLOY_SYNCED=1
+    exec "$STACK_DIR/deploy.sh" "$@"
+  fi
+
+  if [[ "$deploy_sync_required" == "true" || "$deploy_sync_required" == "1" ]]; then
+    log "ERROR: deployment-file sync failed and ECHOEAR_DEPLOY_SYNC_REQUIRED=true"
+    exit 1
+  fi
+  log "WARNING: deployment-file sync failed; keeping the installed files and continuing"
 fi
 
 # Resolve image:

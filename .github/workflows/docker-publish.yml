@@ -30,6 +30,7 @@ jobs:
           set -euo pipefail
           bash -n deploy/oci/deploy.sh
           bash -n deploy/oci/validate-relay.sh
+          bash scripts/test-deploy-compat.sh
           docker compose \
             --env-file deploy/oci/.env.example \
             -f deploy/oci/docker-compose.yml \

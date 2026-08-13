@@ -59,10 +59,17 @@ main push
   → Deploy OCI（SSH 跑 deploy.sh）
 ```
 
-新版 `deploy.sh` 在拉镜像前会从仓库的 `main` 分支原子更新
-`docker-compose.yml` 和自身，然后立刻由下载后的脚本继续部署。服务器
+新版 `deploy.sh` 在拉镜像前会从仓库的 `main` 分支整组下载并校验
+`docker-compose.yml`、`deploy.sh` 和 `validate-relay.sh`。三份文件全部有效
+时才替换服务器上的部署文件，然后立刻由下载后的脚本继续部署；服务器
 `.env` 不会被覆盖。这个能力需要先在服务器上手工安装一次新版
 `deploy.sh`；旧版脚本本身无法自我获得这项能力。
+
+同步默认兼容新旧仓库版本。如果目标分支还是旧版、缺少 Relay 文件，或
+下载/校验临时失败，脚本会清理 `.next` 临时文件，保留服务器当前部署
+文件，并继续执行原有 API 的 `pull/up`。如需让部署文件同步失败时立即
+中止，可设置 `ECHOEAR_DEPLOY_SYNC_REQUIRED=true`；首次升级建议保持默认
+`false`。
 
 如需临时固定部署清单版本，可在服务器 `.env` 中设置
 `ECHOEAR_DEPLOY_REF=<commit-sha>`。紧急情况下在 `.env` 设置
@@ -119,7 +126,9 @@ WebSocket 隧道继续作为回退。
 1. 恢复 OCI Console、Cloud Shell 或普通运维 SSH 访问。
 2. 将本仓库的 `deploy/oci/deploy.sh` 安装到
    `/opt/stack/echoear_cloud/deploy.sh`，权限设为 `0755`。
-3. 保持 `.env` 中 `ECHOEAR_RELAY_ENABLED=false`，先执行一次 `deploy.sh`。
+3. 保持 `.env` 中 `ECHOEAR_RELAY_ENABLED=false` 和
+   `ECHOEAR_DEPLOY_SYNC_REQUIRED=false`，先执行一次 `deploy.sh`。即使此时
+   远端分支仍是旧版，现有 API 也会继续按服务器上的清单更新。
 4. 确认 API `/healthz` 正常，再继续配置 Relay。
 
 ### DNS 与网络
