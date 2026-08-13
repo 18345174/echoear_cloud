@@ -72,7 +72,7 @@ SELECT
     (SELECT STRING_AGG(username || ':' || role, ',' ORDER BY id) FROM users);
 ")
 
-expected="1|1|1|3|5|14|existing-user:admin"
+expected="1|1|1|3|6|15|existing-user:admin"
 if [ "$summary" != "$expected" ]; then
   echo "unexpected migration state: $summary" >&2
   exit 1

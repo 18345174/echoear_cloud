@@ -20,7 +20,7 @@ const (
 	hapiAlgorithm      = "RSA-OAEP-256+A256GCM"
 	hapiBodyMax        = 32 * 1024
 	hapiCiphertextMax  = 16 * 1024
-	apiContractVersion = 14
+	apiContractVersion = 15
 )
 
 type Server struct {

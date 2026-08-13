@@ -1,9 +1,12 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"testing"
+	"time"
 )
 
 func TestTunnelMessageTraceFieldsRoundTrip(t *testing.T) {
@@ -24,6 +27,44 @@ func TestTunnelMessageTraceFieldsRoundTrip(t *testing.T) {
 	if decoded.TraceID != "trace-cloud-1234" || decoded.PhoneTunnelSentAt != 1_000 ||
 		decoded.CloudReceivedAt != 1_010 || decoded.CloudForwardedAt != 1_012 {
 		t.Fatalf("unexpected timing fields: %+v", decoded)
+	}
+}
+
+func TestRealtimeDiscoveryRequiresAgentCapability(t *testing.T) {
+	key := tunnelKey{userID: 1, agentID: "agent-1"}
+	tunnel := newHapiTunnel(nil)
+	if _, err := tunnel.requestDiscovery(context.Background(), key, "request-12345678", json.RawMessage(`{"request_id":"request-12345678"}`), time.Second); !errors.Is(err, errDiscoveryUnsupported) {
+		t.Fatalf("expected unsupported discovery, got %v", err)
+	}
+}
+
+func TestRealtimeDiscoveryDeliversAgentResponse(t *testing.T) {
+	key := tunnelKey{userID: 1, agentID: "agent-1"}
+	peer := &tunnelPeer{key: key, discovery: true, send: make(chan []byte, 1), closed: make(chan struct{})}
+	tunnel := newHapiTunnel(nil)
+	tunnel.agents[key] = peer
+	want := json.RawMessage(`{"encrypted_payload":{"version":1}}`)
+	done := make(chan error, 1)
+	go func() {
+		got, err := tunnel.requestDiscovery(context.Background(), key, "request-12345678", json.RawMessage(`{"request_id":"request-12345678"}`), time.Second)
+		if err == nil && string(got) != string(want) {
+			err = errors.New("unexpected discovery payload")
+		}
+		done <- err
+	}()
+
+	select {
+	case raw := <-peer.send:
+		var request tunnelMessage
+		if err := json.Unmarshal(raw, &request); err != nil {
+			t.Fatal(err)
+		}
+		tunnel.deliverDiscovery(peer, request.RequestID, want)
+	case <-time.After(time.Second):
+		t.Fatal("discovery request was not sent")
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }
 

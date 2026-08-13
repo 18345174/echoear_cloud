@@ -1,9 +1,11 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"sync"
@@ -37,18 +39,30 @@ type tunnelPeer struct {
 	subjectUserID int64
 	accessID      string
 	gateway       bool
+	discovery     bool
 	send          chan []byte
 	closed        chan struct{}
 	closeOnce     sync.Once
 }
 
 type hapiTunnel struct {
-	mu       sync.RWMutex
-	db       *database.DB
-	agents   map[tunnelKey]*tunnelPeer
-	mobiles  map[tunnelKey]map[string]*tunnelPeer
-	gateways map[tunnelKey]map[string]*gatewayRequest
+	mu          sync.RWMutex
+	db          *database.DB
+	agents      map[tunnelKey]*tunnelPeer
+	mobiles     map[tunnelKey]map[string]*tunnelPeer
+	gateways    map[tunnelKey]map[string]*gatewayRequest
+	discoveries map[tunnelKey]map[string]chan discoveryResult
 }
+
+type discoveryResult struct {
+	payload json.RawMessage
+	err     error
+}
+
+var (
+	errDiscoveryUnsupported = errors.New("agent does not support realtime discovery")
+	errDiscoveryUnavailable = errors.New("agent realtime discovery unavailable")
+)
 
 type tunnelMessage struct {
 	Type              string          `json:"type"`
@@ -64,8 +78,9 @@ type tunnelMessage struct {
 func newHapiTunnel(db *database.DB) *hapiTunnel {
 	return &hapiTunnel{
 		db: db, agents: make(map[tunnelKey]*tunnelPeer),
-		mobiles:  make(map[tunnelKey]map[string]*tunnelPeer),
-		gateways: make(map[tunnelKey]map[string]*gatewayRequest),
+		mobiles:     make(map[tunnelKey]map[string]*tunnelPeer),
+		gateways:    make(map[tunnelKey]map[string]*gatewayRequest),
+		discoveries: make(map[tunnelKey]map[string]chan discoveryResult),
 	}
 }
 
@@ -120,8 +135,9 @@ func (s *Server) hapiTunnel(c *gin.Context) {
 		conn: conn, key: tunnelKey{userID: resourceUserID, agentID: resourceAgentID}, role: role,
 		connectionID: randomTunnelID(), requestID: requestID, sessionID: c.GetString("session_id"),
 		subjectUserID: userID, accessID: accessID,
-		gateway: role == "agent" && c.Query("gateway") == "1",
-		send:    make(chan []byte, 8), closed: make(chan struct{}),
+		gateway:   role == "agent" && c.Query("gateway") == "1",
+		discovery: role == "agent" && c.Query("discovery") == "1",
+		send:      make(chan []byte, 8), closed: make(chan struct{}),
 	}
 	if !s.tunnel.attach(peer) {
 		peer.close()
@@ -170,18 +186,30 @@ func (t *hapiTunnel) attach(peer *tunnelPeer) bool {
 func (t *hapiTunnel) detach(peer *tunnelPeer) {
 	peer.close()
 	t.mu.Lock()
-	defer t.mu.Unlock()
 	if peer.role == "agent" {
 		if t.agents[peer.key] == peer {
 			delete(t.agents, peer.key)
-			for _, gateway := range t.gateways[peer.key] {
+			gateways := t.gateways[peer.key]
+			mobiles := t.mobiles[peer.key]
+			discoveries := t.discoveries[peer.key]
+			delete(t.gateways, peer.key)
+			delete(t.discoveries, peer.key)
+			t.mu.Unlock()
+			for _, gateway := range gateways {
 				gateway.close()
 			}
-			delete(t.gateways, peer.key)
-			for _, mobile := range t.mobiles[peer.key] {
+			for _, mobile := range mobiles {
 				t.sendControl(mobile, tunnelMessage{Type: "agent_offline"})
 			}
+			for _, waiter := range discoveries {
+				select {
+				case waiter <- discoveryResult{err: errDiscoveryUnavailable}:
+				default:
+				}
+			}
+			return
 		}
+		t.mu.Unlock()
 		return
 	}
 	if peers := t.mobiles[peer.key]; peers != nil {
@@ -190,7 +218,9 @@ func (t *hapiTunnel) detach(peer *tunnelPeer) {
 			delete(t.mobiles, peer.key)
 		}
 	}
-	if agent := t.agents[peer.key]; agent != nil {
+	agent := t.agents[peer.key]
+	t.mu.Unlock()
+	if agent != nil {
 		t.sendControl(agent, tunnelMessage{Type: "disconnect", ConnectionID: peer.connectionID, RequestID: peer.requestID})
 	}
 }
@@ -209,7 +239,8 @@ func (t *hapiTunnel) readLoop(peer *tunnelPeer) {
 		}
 		var message tunnelMessage
 		if json.Unmarshal(raw, &message) != nil || len(message.Payload) == 0 ||
-			(message.Type != "data" && (peer.role != "agent" || message.Type != "gateway_data")) {
+			(message.Type != "data" && (peer.role != "agent" ||
+				(message.Type != "gateway_data" && message.Type != "connection_response" && message.Type != "connection_error"))) {
 			t.sendControl(peer, tunnelMessage{Type: "invalid_frame"})
 			continue
 		}
@@ -236,6 +267,10 @@ func (t *hapiTunnel) readLoop(peer *tunnelPeer) {
 			continue
 		}
 		connectionID := strings.TrimSpace(message.ConnectionID)
+		if message.Type == "connection_response" || message.Type == "connection_error" {
+			t.deliverDiscovery(peer, strings.TrimSpace(message.RequestID), message.Payload)
+			continue
+		}
 		if message.Type == "gateway_data" {
 			t.deliverGateway(peer.key, connectionID, message.Payload)
 			continue
@@ -245,6 +280,77 @@ func (t *hapiTunnel) readLoop(peer *tunnelPeer) {
 			continue
 		}
 		t.sendControl(mobile, tunnelMessage{Type: "data", Payload: message.Payload})
+	}
+}
+
+func (t *hapiTunnel) requestDiscovery(
+	ctx context.Context,
+	key tunnelKey,
+	requestID string,
+	payload json.RawMessage,
+	timeout time.Duration,
+) (json.RawMessage, error) {
+	waiter := make(chan discoveryResult, 1)
+	t.mu.Lock()
+	agent := t.agents[key]
+	if agent == nil || !agent.discovery {
+		t.mu.Unlock()
+		return nil, errDiscoveryUnsupported
+	}
+	if t.discoveries[key] == nil {
+		t.discoveries[key] = make(map[string]chan discoveryResult)
+	}
+	if _, exists := t.discoveries[key][requestID]; exists {
+		t.mu.Unlock()
+		return nil, errDiscoveryUnavailable
+	}
+	t.discoveries[key][requestID] = waiter
+	t.mu.Unlock()
+
+	defer func() {
+		t.mu.Lock()
+		if pending := t.discoveries[key]; pending != nil {
+			if pending[requestID] == waiter {
+				delete(pending, requestID)
+			}
+			if len(pending) == 0 {
+				delete(t.discoveries, key)
+			}
+		}
+		t.mu.Unlock()
+	}()
+
+	if !t.sendControl(agent, tunnelMessage{Type: "connection_request", RequestID: requestID, Payload: payload}) {
+		return nil, errDiscoveryUnavailable
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case result := <-waiter:
+		return result.payload, result.err
+	case <-timer.C:
+		return nil, errDiscoveryUnavailable
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (t *hapiTunnel) deliverDiscovery(peer *tunnelPeer, requestID string, payload json.RawMessage) {
+	if !validIdentifier(requestID, 8, 128) {
+		return
+	}
+	t.mu.RLock()
+	if t.agents[peer.key] != peer {
+		t.mu.RUnlock()
+		return
+	}
+	waiter := t.discoveries[peer.key][requestID]
+	t.mu.RUnlock()
+	if waiter != nil {
+		select {
+		case waiter <- discoveryResult{payload: append(json.RawMessage(nil), payload...)}:
+		default:
+		}
 	}
 }
 

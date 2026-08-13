@@ -1,12 +1,15 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -109,6 +112,41 @@ func (s *Server) requestHapiConnection(c *gin.Context) {
 		return
 	}
 	payload, _ := json.Marshal(gin.H{"request_id": request.RequestID, "envelope": request.Envelope, "access_ticket": ticket, "access": claims})
+	fastPayload, fastErr := s.tunnel.requestDiscovery(
+		c.Request.Context(),
+		tunnelKey{userID: access.UserID, agentID: agent.AgentID},
+		request.RequestID,
+		payload,
+		2*time.Second,
+	)
+	if fastErr == nil {
+		var response struct {
+			EncryptedPayload encryptedBlob `json:"encrypted_payload"`
+			Error            string        `json:"error"`
+		}
+		if json.Unmarshal(fastPayload, &response) != nil || strings.TrimSpace(response.Error) != "" {
+			_ = s.db.RevokeAccessLease(claims.TicketID)
+			fail(c, http.StatusServiceUnavailable, "电脑拒绝了 hapi 连接请求")
+			return
+		}
+		if message := validateEncryptedBlob(response.EncryptedPayload); message != "" {
+			_ = s.db.RevokeAccessLease(claims.TicketID)
+			fail(c, http.StatusBadGateway, "电脑返回的 hapi 连接信息无效")
+			return
+		}
+		raw, _ := json.Marshal(response.EncryptedPayload)
+		if _, err := s.db.SaveHapiResponse(access.UserID, agent.AgentID, request.RequestID, raw); err != nil {
+			_ = s.db.RevokeAccessLease(claims.TicketID)
+			fail(c, http.StatusInternalServerError, "保存 hapi 连接响应失败")
+			return
+		}
+		ok(c, "ok", gin.H{"request_id": request.RequestID, "encrypted_payload": response.EncryptedPayload})
+		return
+	}
+	if errors.Is(fastErr, context.Canceled) || errors.Is(fastErr, context.DeadlineExceeded) {
+		_ = s.db.RevokeAccessLease(claims.TicketID)
+		return
+	}
 	item, err := s.db.EnqueueHapiConnection(access.UserID, agent.AgentID, request.RequestID, payload)
 	if err != nil {
 		_ = s.db.RevokeAccessLease(claims.TicketID)
