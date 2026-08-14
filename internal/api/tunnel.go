@@ -121,7 +121,7 @@ func (s *Server) hapiTunnel(c *gin.Context) {
 			fail(c, http.StatusInternalServerError, "Agent 校验失败")
 			return
 		}
-		if access == nil || !s.db.AccessRequestValid(userID, access, requestID) {
+		if access == nil || !s.db.RenewAccessRequest(userID, access, requestID, hapiAccessSessionTTL) {
 			fail(c, http.StatusForbidden, "Agent 访问票据无效或已过期")
 			return
 		}
@@ -393,7 +393,7 @@ func (t *hapiTunnel) sessionAuthorized(peer *tunnelPeer) bool {
 		return session.UserID == peer.key.userID
 	}
 	access, err := t.db.ResolveAgentAccess(peer.subjectUserID, peer.accessID)
-	return err == nil && access != nil && access.UserID == peer.key.userID && access.AgentID == peer.key.agentID && t.db.AccessRequestValid(peer.subjectUserID, access, peer.requestID)
+	return err == nil && access != nil && access.UserID == peer.key.userID && access.AgentID == peer.key.agentID && t.db.RenewAccessRequest(peer.subjectUserID, access, peer.requestID, hapiAccessSessionTTL)
 }
 
 func (t *hapiTunnel) sendControl(peer *tunnelPeer, message tunnelMessage) bool {

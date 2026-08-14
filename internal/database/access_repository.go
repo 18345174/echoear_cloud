@@ -562,10 +562,23 @@ func (db *DB) AccessLeaseValid(ticketID string, userID int64, access *AgentAcces
 	return err == nil && ok
 }
 
-func (db *DB) AccessRequestValid(userID int64, access *AgentAccess, requestID string) bool {
+func (db *DB) RenewAccessRequest(userID int64, access *AgentAccess, requestID string, ttl time.Duration) bool {
+	if ttl <= 0 || ttl > 7*24*time.Hour {
+		ttl = 24 * time.Hour
+	}
+	ttlSeconds := int64(ttl.Seconds())
+	refreshSeconds := int64((ttl / 2).Seconds())
 	var ok bool
-	err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM agent_access_leases l WHERE l.request_id=$1 AND l.subject_user_id=$2 AND l.agent_id=$3
-		AND l.policy_version=$4 AND l.revoked_at IS NULL AND l.expires_at>NOW())`, strings.TrimSpace(requestID), userID, access.ID, access.PolicyVersion).Scan(&ok)
+	err := db.QueryRow(`WITH candidate AS (
+		SELECT ticket_id FROM agent_access_leases l WHERE l.request_id=$1 AND l.subject_user_id=$2 AND l.agent_id=$3
+			AND l.policy_version=$4 AND l.revoked_at IS NULL AND l.expires_at>NOW()
+	), renewed AS (
+		UPDATE agent_access_leases SET expires_at=NOW()+($5 * INTERVAL '1 second')
+		WHERE ticket_id IN (SELECT ticket_id FROM candidate)
+			AND expires_at<NOW()+($6 * INTERVAL '1 second')
+		RETURNING ticket_id
+	)
+	SELECT EXISTS(SELECT 1 FROM candidate)`, strings.TrimSpace(requestID), userID, access.ID, access.PolicyVersion, ttlSeconds, refreshSeconds).Scan(&ok)
 	return err == nil && ok
 }
 

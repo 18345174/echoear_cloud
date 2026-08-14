@@ -124,6 +124,27 @@ func TestCreateShareReportsDatabaseStageAndSQLState(t *testing.T) {
 	}
 }
 
+func TestRenewAccessRequestExtendsActiveLease(t *testing.T) {
+	raw, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	db := &DB{DB: raw}
+	access := &AgentAccess{Agent: Agent{ID: 12}, PolicyVersion: 3}
+
+	mock.ExpectQuery("WITH candidate AS").
+		WithArgs("request-12345678", int64(9), int64(12), 3, int64(24*60*60), int64(12*60*60)).
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(true))
+
+	if !db.RenewAccessRequest(9, access, " request-12345678 ", 24*time.Hour) {
+		t.Fatal("expected active request lease to be renewed")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRecordShareUsageIsIdempotent(t *testing.T) {
 	raw, mock, err := sqlmock.New()
 	if err != nil {

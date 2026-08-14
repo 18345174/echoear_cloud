@@ -18,6 +18,7 @@ const (
 	gatewayRequestChunk  = 192 << 10
 	gatewayResponseWait  = 40 * time.Second
 	gatewaySessionPeriod = 25 * time.Second
+	hapiAccessSessionTTL = 24 * time.Hour
 )
 
 var gatewayHopHeaders = map[string]struct{}{
@@ -66,7 +67,7 @@ func (s *Server) hapiGateway(c *gin.Context) {
 		fail(c, http.StatusInternalServerError, "Agent 校验失败")
 		return
 	}
-	if access == nil || !s.db.AccessRequestValid(userID, access, requestID) {
+	if access == nil || !s.db.RenewAccessRequest(userID, access, requestID, hapiAccessSessionTTL) {
 		fail(c, http.StatusForbidden, "Agent 访问票据无效或已过期")
 		return
 	}
@@ -305,7 +306,7 @@ func (t *hapiTunnel) gatewayAuthorized(gateway *gatewayRequest) bool {
 	access, err := t.db.ResolveAgentAccess(gateway.subjectUserID, gateway.accessID)
 	return err == nil && access != nil && access.UserID == gateway.key.userID &&
 		access.AgentID == gateway.key.agentID &&
-		t.db.AccessRequestValid(gateway.subjectUserID, access, gateway.requestID)
+		t.db.RenewAccessRequest(gateway.subjectUserID, access, gateway.requestID, hapiAccessSessionTTL)
 }
 
 func (gateway *gatewayRequest) close() {
