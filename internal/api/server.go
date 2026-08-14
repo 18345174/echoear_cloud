@@ -2,6 +2,7 @@ package api
 
 import (
 	"database/sql"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -21,7 +22,17 @@ const (
 	hapiBodyMax        = 32 * 1024
 	hapiCiphertextMax  = 16 * 1024
 	apiContractVersion = 15
+	webSessionCookie   = "echoear_session"
 )
+
+//go:embed web/connect.html
+var connectHTML []byte
+
+//go:embed web/connect.css
+var connectCSS []byte
+
+//go:embed web/connect.js
+var connectJS []byte
 
 type Server struct {
 	db      *database.DB
@@ -45,12 +56,19 @@ func NewServer(db *database.DB, cfg config.Config) *Server {
 		MaxAge:           12 * time.Hour,
 	}
 	router.Use(cors.New(corsConfig))
+	router.GET("/", func(c *gin.Context) { c.Redirect(http.StatusTemporaryRedirect, "/connect") })
+	router.GET("/connect", s.connectPage)
+	router.GET("/connect.css", s.connectStyles)
+	router.GET("/connect.js", s.connectScript)
+	router.GET("/hapi", func(c *gin.Context) { c.Redirect(http.StatusTemporaryRedirect, "/hapi/") })
+	router.GET("/hapi/*path", s.hapiWeb)
 	router.GET("/healthz", s.health)
 	router.GET("/api/v1/health", s.health)
 
 	api := router.Group("/api/v1")
 	auth := api.Group("/auth")
 	auth.POST("/login", s.login)
+	auth.POST("/web-login", s.webLogin)
 	auth.Use(s.requireSession())
 	auth.POST("/logout", s.logout)
 	auth.GET("/me", s.me)
@@ -120,13 +138,16 @@ func (s *Server) health(c *gin.Context) {
 
 func (s *Server) requireSession() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		parts := strings.SplitN(strings.TrimSpace(c.GetHeader("Authorization")), " ", 2)
-		if len(parts) != 2 || parts[0] != "Session" || strings.TrimSpace(parts[1]) == "" {
+		token := nativeSessionToken(c)
+		if token == "" {
+			token, _ = c.Cookie(webSessionCookie)
+		}
+		if strings.TrimSpace(token) == "" {
 			fail(c, http.StatusUnauthorized, "未提供有效会话")
 			c.Abort()
 			return
 		}
-		s.requireSessionToken(c, strings.TrimSpace(parts[1]))
+		s.requireSessionToken(c, strings.TrimSpace(token))
 	}
 }
 
@@ -134,12 +155,23 @@ func (s *Server) requireGatewaySession() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := strings.TrimSpace(c.GetHeader("X-EchoEar-Session"))
 		if token == "" {
+			token, _ = c.Cookie(webSessionCookie)
+		}
+		if token == "" {
 			fail(c, http.StatusUnauthorized, "未提供有效会话")
 			c.Abort()
 			return
 		}
 		s.requireSessionToken(c, token)
 	}
+}
+
+func nativeSessionToken(c *gin.Context) string {
+	parts := strings.SplitN(strings.TrimSpace(c.GetHeader("Authorization")), " ", 2)
+	if len(parts) != 2 || parts[0] != "Session" {
+		return ""
+	}
+	return strings.TrimSpace(parts[1])
 }
 
 func (s *Server) requireSessionToken(c *gin.Context, token string) {
@@ -181,6 +213,14 @@ func (s *Server) requireAdmin() gin.HandlerFunc {
 }
 
 func (s *Server) login(c *gin.Context) {
+	s.loginWithCookie(c, false)
+}
+
+func (s *Server) webLogin(c *gin.Context) {
+	s.loginWithCookie(c, true)
+}
+
+func (s *Server) loginWithCookie(c *gin.Context, web bool) {
 	var request struct {
 		Username string `json:"username" binding:"required"`
 		Password string `json:"password" binding:"required"`
@@ -214,16 +254,33 @@ func (s *Server) login(c *gin.Context) {
 		return
 	}
 	_, _ = s.db.Exec(`UPDATE users SET last_login_at=NOW(),updated_at=NOW() WHERE id=$1`, user.ID)
-	ok(c, "登录成功", gin.H{
+	data := gin.H{
 		"user_id": user.ID, "session_id": token, "session_expires_at": expiresAt,
 		"username": user.Username, "role": user.Role, "status": user.Status,
 		"password_changed": boolInt(user.PasswordChanged), "feature_codes": featureCodes(user.Role),
-	})
+	}
+	if web {
+		s.setWebSessionCookie(c, token, expiresAt)
+		delete(data, "session_id")
+	}
+	ok(c, "登录成功", data)
 }
 
 func (s *Server) logout(c *gin.Context) {
 	_ = s.db.RevokeSession(c.GetString("session_id"))
+	s.clearWebSessionCookie(c)
 	ok(c, "登出成功", nil)
+}
+
+func (s *Server) setWebSessionCookie(c *gin.Context, token string, expiresAt time.Time) {
+	c.SetSameSite(http.SameSiteLaxMode)
+	maxAge := max(1, int(time.Until(expiresAt).Seconds()))
+	c.SetCookie(webSessionCookie, token, maxAge, "/", "", strings.HasPrefix(s.config.PublicBaseURL, "https://"), true)
+}
+
+func (s *Server) clearWebSessionCookie(c *gin.Context) {
+	c.SetSameSite(http.SameSiteLaxMode)
+	c.SetCookie(webSessionCookie, "", -1, "/", "", strings.HasPrefix(s.config.PublicBaseURL, "https://"), true)
 }
 
 func (s *Server) me(c *gin.Context) {

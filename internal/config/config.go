@@ -18,6 +18,7 @@ type Config struct {
 	AllowedOrigins         []string
 	SessionTTL             time.Duration
 	AccessTicketSigningKey string
+	HapiWebDir             string
 }
 
 func Load() (Config, error) {
@@ -45,6 +46,7 @@ func Load() (Config, error) {
 		AllowedOrigins:         origins,
 		SessionTTL:             30 * 24 * time.Hour,
 		AccessTicketSigningKey: accessTicketSigningKey,
+		HapiWebDir:             env("HAPI_WEB_DIR", "/app/hapi-web"),
 	}, nil
 }
 

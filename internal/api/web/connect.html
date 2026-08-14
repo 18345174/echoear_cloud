@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#ffffff">
+  <title>EchoEar HAPI</title>
+  <link rel="stylesheet" href="/connect.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <a class="brand" href="/connect" aria-label="EchoEar HAPI 首页">
+        <span class="brand-mark" aria-hidden="true">E</span>
+        <span>
+          <strong>EchoEar</strong>
+          <small>HAPI 网页版</small>
+        </span>
+      </a>
+      <button id="logout" class="quiet-button" type="button" hidden>退出登录</button>
+    </header>
+
+    <section id="login-view" class="auth-layout" hidden>
+      <div class="auth-copy">
+        <p class="eyebrow">远程工作台</p>
+        <h1>连接你的电脑</h1>
+        <p>登录 EchoEar 账号，从浏览器进入在线 Agent 的 HAPI 任务。</p>
+      </div>
+      <form id="login-form" class="auth-panel">
+        <label for="username">用户名</label>
+        <input id="username" name="username" autocomplete="username" required>
+        <label for="password">密码</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required>
+        <button id="login-button" class="primary-button" type="submit">登录</button>
+        <p id="login-error" class="error-text" role="alert" hidden></p>
+      </form>
+    </section>
+
+    <section id="agents-view" hidden>
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">电脑</p>
+          <h1>选择 Agent</h1>
+          <p id="account-summary" class="section-copy"></p>
+        </div>
+        <button id="refresh" class="secondary-button" type="button">刷新</button>
+      </div>
+      <div id="agent-list" class="agent-list" aria-live="polite"></div>
+      <div id="empty-state" class="empty-state" hidden>
+        <strong>没有可用的 Agent</strong>
+        <p>确认电脑上的 EchoEar Controller 已登录并保持在线。</p>
+      </div>
+    </section>
+
+    <div id="page-status" class="page-status" role="status" aria-live="polite">正在检查登录状态...</div>
+  </main>
+  <script src="/connect.js" defer></script>
+</body>
+</html>

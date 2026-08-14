@@ -14,6 +14,7 @@ tunnel. It has no runtime dependency on `mqtt_server`.
 - CI-published multi-arch container image on GitHub Container Registry (GHCR)
 - Optional OCI auto-deploy after each successful image publish
 - Optional self-hosted HAPI Relay deployment with per-Hub issued credentials
+- Same-origin HAPI Web at `/connect` and `/hapi/`, including encrypted Agent discovery
 
 The clean schema intentionally excludes the retired ACP task/message history
 tables. HAPI remains the source of truth for tasks, messages, models, tools,
@@ -86,6 +87,17 @@ Internet deployment and set `PUBLIC_BASE_URL` to the exact origin users enter
 in Android and macOS, for example `https://echoear.example.com`. Startup fails
 when this value is absent or contains an API path, preventing empty or invalid
 cloud addresses from being provisioned into devices.
+
+Open `https://your-echoear-host/connect` to use HAPI in a browser. Web login
+uses an HttpOnly, SameSite cookie while native clients keep the existing
+`Authorization: Session <session_id>` contract. The browser performs the same
+RSA-OAEP/AES-GCM Agent handshake as Android, then sends HAPI API, SSE, media
+Range, and download requests through the same-host cloud gateway.
+
+The container builds the HAPI PWA from `https://github.com/18345174/hapi.git`
+at `main`. Reproducible builds may override Docker build arguments
+`HAPI_REPOSITORY` and `HAPI_REF`; deploy the matching HAPI commit before a Cloud
+image that depends on new PWA protocol behavior.
 
 ## Required configuration
 
