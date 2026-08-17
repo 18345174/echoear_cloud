@@ -13,12 +13,15 @@ import (
 )
 
 const (
-	gatewayMaxBody       = 72 << 20
-	gatewayInlineBody    = 6 << 20
-	gatewayRequestChunk  = 192 << 10
-	gatewayResponseWait  = 40 * time.Second
-	gatewaySessionPeriod = 25 * time.Second
-	hapiAccessSessionTTL = 24 * time.Hour
+	gatewayMaxBody             = 72 << 20
+	gatewayInlineBody          = 6 << 20
+	gatewayRequestChunk        = 192 << 10
+	gatewayResponseWait        = 40 * time.Second
+	gatewaySessionPeriod       = 25 * time.Second
+	hapiAccessSessionTTL       = 24 * time.Hour
+	gatewayErrorHeader         = "X-EchoEar-Gateway-Error"
+	gatewaySessionInvalid      = "HAPI_GATEWAY_SESSION_INVALID"
+	gatewayErrorSessionInvalid = "session-invalid"
 )
 
 var gatewayHopHeaders = map[string]struct{}{
@@ -174,7 +177,13 @@ func (s *Server) streamGatewayResponse(c *gin.Context, gateway *gatewayRequest) 
 				return
 			case "response_error":
 				if !started {
-					fail(c, http.StatusBadGateway, strings.TrimSpace(frame.Message))
+					message := strings.TrimSpace(frame.Message)
+					if message == gatewaySessionInvalid {
+						c.Header(gatewayErrorHeader, gatewayErrorSessionInvalid)
+						fail(c, http.StatusConflict, message)
+					} else {
+						fail(c, http.StatusBadGateway, message)
+					}
 				}
 				return
 			}
